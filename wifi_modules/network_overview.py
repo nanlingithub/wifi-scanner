@@ -104,139 +104,259 @@ class NetworkOverviewTab:
         self._start_queue_processor()
     
     def _setup_ui(self):
-        """设置UI（保留完整功能）"""
-        # 顶部控制栏
+        """设置UI（重构版 - 主入口）"""
+        self._setup_control_bar()
+        main_paned = self._setup_main_layout()
+        self._setup_left_panel(main_paned)
+        self._setup_right_panel(main_paned)
+        
+        # 初始化
+        self._refresh_adapters()
+        self._draw_empty_radar()
+    
+    def _setup_control_bar(self):
+        """设置顶部控制栏"""
         control_frame = ttk.Frame(self.frame)
         control_frame.pack(fill='x', padx=10, pady=5)
         
-        ttk.Label(control_frame, text="适配器:", font=('Microsoft YaHei', 10)).pack(side='left', padx=5)
+        # 适配器选择
+        self._create_adapter_selector(control_frame)
+        
+        # 扫描控制按钮
+        self._create_scan_buttons(control_frame)
+        
+        # 频段过滤器
+        self._create_band_filter(control_frame)
+        
+        # 功能按钮组
+        self._create_feature_buttons(control_frame)
+    
+    def _create_adapter_selector(self, parent):
+        """创建适配器选择器"""
+        ttk.Label(parent, text="适配器:", font=('Microsoft YaHei', 10)).pack(side='left', padx=5)
         
         self.adapter_var = tk.StringVar()
-        self.adapter_combo = ttk.Combobox(control_frame, textvariable=self.adapter_var, 
-                                         width=50, state='readonly')
+        self.adapter_combo = ttk.Combobox(
+            parent, 
+            textvariable=self.adapter_var,
+            width=50, 
+            state='readonly'
+        )
         self.adapter_combo.pack(side='left', padx=5)
+    
+    def _create_scan_buttons(self, parent):
+        """创建扫描相关按钮"""
+        ModernButton(
+            parent, 
+            text="🔄 刷新",
+            command=self._refresh_adapters, 
+            style='primary'
+        ).pack(side='left', padx=5)
         
-        ModernButton(control_frame, text="🔄 刷新", 
-                    command=self._refresh_adapters, style='primary').pack(side='left', padx=5)
+        ModernButton(
+            parent, 
+            text="📡 扫描",
+            command=self._scan_wifi, 
+            style='success'
+        ).pack(side='left', padx=5)
+    
+    def _create_band_filter(self, parent):
+        """创建频段过滤器"""
+        ttk.Label(
+            parent, 
+            text="频段:", 
+            font=('Microsoft YaHei', 10)
+        ).pack(side='left', padx=(15, 5))
         
-        ModernButton(control_frame, text="📡 扫描", 
-                    command=self._scan_wifi, style='success').pack(side='left', padx=5)
-        
-        ttk.Label(control_frame, text="频段:", font=('Microsoft YaHei', 10)).pack(side='left', padx=(15, 5))
         self.band_var = tk.StringVar(value="全部")
-        band_combo = ttk.Combobox(control_frame, textvariable=self.band_var,
-                                 values=["全部", "2.4GHz", "5GHz", "6GHz"],
-                                 width=8, state='readonly')
+        band_combo = ttk.Combobox(
+            parent, 
+            textvariable=self.band_var,
+            values=["全部", "2.4GHz", "5GHz", "6GHz"],
+            width=8, 
+            state='readonly'
+        )
         band_combo.pack(side='left', padx=5)
         band_combo.bind('<<ComboboxSelected>>', lambda e: self._apply_band_filter())
-        
-        self.monitor_btn = ModernButton(control_frame, text="▶ 监控", 
-                                       command=self._toggle_monitor, style='warning')
+    
+    def _create_feature_buttons(self, parent):
+        """创建功能按钮组"""
+        self.monitor_btn = ModernButton(
+            parent, 
+            text="▶ 监控",
+            command=self._toggle_monitor, 
+            style='warning'
+        )
         self.monitor_btn.pack(side='left', padx=5)
         
-        ModernButton(control_frame, text="📊 信道", 
-                    command=self._show_channel_analysis, style='info').pack(side='left', padx=5)
-        ModernButton(control_frame, text="📈 趋势", 
-                    command=self._show_history_chart, style='info').pack(side='left', padx=5)
-        ModernButton(control_frame, text="📄 报告", 
-                    command=self._export_diagnostic_report, style='primary').pack(side='left', padx=5)
+        # 分析功能按钮
+        buttons_config = [
+            {'text': '📊 信道', 'command': self._show_channel_analysis, 'style': 'info'},
+            {'text': '📈 趋势', 'command': self._show_history_chart, 'style': 'info'},
+            {'text': '📄 报告', 'command': self._export_diagnostic_report, 'style': 'primary'},
+            {'text': '🧭 罗盘', 'command': self._show_signal_compass, 'style': 'success'}
+        ]
         
-        # v1.5 新增：信号罗盘功能
-        ModernButton(control_frame, text="🧭 罗盘", 
-                    command=self._show_signal_compass, style='success').pack(side='left', padx=5)
-        
-        # 主内容区域 - 左右分栏
+        for config in buttons_config:
+            ModernButton(parent, **config).pack(side='left', padx=5)
+    
+    def _setup_main_layout(self):
+        """设置主布局区域"""
         main_paned = ttk.PanedWindow(self.frame, orient='horizontal')
         main_paned.pack(fill='both', expand=True, padx=10, pady=5)
-        
-        # 左侧：当前连接信息 + WiFi列表
-        left_frame = ttk.Frame(main_paned)
-        main_paned.add(left_frame, weight=2)
+        return main_paned
+    
+    def _setup_left_panel(self, parent):
+        """设置左侧面板：当前连接信息 + WiFi列表"""
+        left_frame = ttk.Frame(parent)
+        parent.add(left_frame, weight=2)
         
         # 当前连接信息
-        info_label = ttk.Label(left_frame, text="📶 当前WiFi连接", 
-                              font=('Microsoft YaHei', 10, 'bold'))
-        info_label.pack(anchor='w', pady=5)
-        
-        self.current_info = scrolledtext.ScrolledText(left_frame, height=8, width=50,
-                                                      font=('Consolas', 9))
-        self.current_info.pack(fill='x', pady=5)
+        self._create_connection_info(left_frame)
         
         # WiFi网络列表
-        list_label = ttk.Label(left_frame, text="🌐 周围WiFi网络", 
-                              font=('Microsoft YaHei', 10, 'bold'))
-        list_label.pack(anchor='w', pady=5)
+        self._create_wifi_tree(left_frame)
+    
+    def _create_connection_info(self, parent):
+        """创建当前连接信息组件"""
+        ttk.Label(
+            parent, 
+            text="📶 当前WiFi连接",
+            font=('Microsoft YaHei', 10, 'bold')
+        ).pack(anchor='w', pady=5)
+        
+        self.current_info = scrolledtext.ScrolledText(
+            parent, 
+            height=8, 
+            width=50,
+            font=('Consolas', 9)
+        )
+        self.current_info.pack(fill='x', pady=5)
+    
+    def _create_wifi_tree(self, parent):
+        """创建WiFi网络列表树形控件"""
+        ttk.Label(
+            parent, 
+            text="🌐 周围WiFi网络",
+            font=('Microsoft YaHei', 10, 'bold')
+        ).pack(anchor='w', pady=5)
+        
+        # 定义列
+        columns = (
+            "☑", "#", "SSID", "信号强度", "信号(%)", "dBm", "厂商",
+            "BSSID", "信道", "频段", "WiFi标准", "加密"
+        )
+        widths = [30, 30, 140, 95, 55, 60, 95, 125, 45, 55, 95, 75]
         
         # 创建Treeview
-        columns = ("☑", "#", "SSID", "信号强度", "信号(%)", "dBm", "厂商", 
-                  "BSSID", "信道", "频段", "WiFi标准", "加密")
-        self.wifi_tree = ttk.Treeview(left_frame, columns=columns, show='headings', height=15)
+        self.wifi_tree = ttk.Treeview(
+            parent, 
+            columns=columns, 
+            show='headings', 
+            height=15
+        )
         
-        # 设置列宽
-        widths = [30, 30, 140, 95, 55, 60, 95, 125, 45, 55, 95, 75]
+        # 配置列
         for col, width in zip(columns, widths):
             self.wifi_tree.heading(col, text=col)
-            self.wifi_tree.column(col, width=width, anchor='center' if col != 'SSID' else 'w')
+            anchor = 'w' if col == 'SSID' else 'center'
+            self.wifi_tree.column(col, width=width, anchor=anchor)
         
-        # 滚动条
-        scrollbar = ttk.Scrollbar(left_frame, orient='vertical', command=self.wifi_tree.yview)
+        # 添加滚动条
+        scrollbar = ttk.Scrollbar(
+            parent, 
+            orient='vertical', 
+            command=self.wifi_tree.yview
+        )
         self.wifi_tree.configure(yscrollcommand=scrollbar.set)
         
         self.wifi_tree.pack(side='left', fill='both', expand=True)
         scrollbar.pack(side='right', fill='y')
         
-        # 信号质量彩色标签
-        self.wifi_tree.tag_configure('excellent', background='#d4edda')
-        self.wifi_tree.tag_configure('good', background='#fff3cd')
-        self.wifi_tree.tag_configure('fair', background='#ffe5d0')
-        self.wifi_tree.tag_configure('poor', background='#f8d7da')
-        self.wifi_tree.tag_configure('wifi6e', background='#e7f3ff')
+        # 配置信号质量标签样式
+        self._configure_tree_tags()
         
-        # 绑定点击事件
+        # 绑定事件
         self.wifi_tree.bind('<Button-1>', self._on_tree_click)
-        
-        # 右键菜单
         self._setup_context_menu()
+    
+    def _configure_tree_tags(self):
+        """配置树形控件的标签样式"""
+        tag_styles = {
+            'excellent': '#d4edda',
+            'good': '#fff3cd',
+            'fair': '#ffe5d0',
+            'poor': '#f8d7da',
+            'wifi6e': '#e7f3ff'
+        }
         
-        # 右侧：WiFi雷达图（v1.4优化版）
-        right_frame = ttk.Frame(main_paned)
-        main_paned.add(right_frame, weight=3)
+        for tag, bg_color in tag_styles.items():
+            self.wifi_tree.tag_configure(tag, background=bg_color)
+    
+    def _setup_right_panel(self, parent):
+        """设置右侧面板：WiFi雷达图"""
+        right_frame = ttk.Frame(parent)
+        parent.add(right_frame, weight=3)
         
         # 标题
-        title_frame = ttk.Frame(right_frame)
-        title_frame.pack(fill='x', pady=5)
-        ttk.Label(title_frame, text="📡 WiFi信号雷达图", 
-                 font=('Microsoft YaHei', 10, 'bold')).pack(side='left')
+        self._create_radar_title(right_frame)
         
-        # 雷达图控制
-        radar_control = ttk.Frame(right_frame)
+        # 雷达控制
+        self._create_radar_controls(right_frame)
+        
+        # 雷达画布
+        self._create_radar_canvas(right_frame)
+    
+    def _create_radar_title(self, parent):
+        """创建雷达图标题"""
+        title_frame = ttk.Frame(parent)
+        title_frame.pack(fill='x', pady=5)
+        
+        ttk.Label(
+            title_frame, 
+            text="📡 WiFi信号雷达图",
+            font=('Microsoft YaHei', 10, 'bold')
+        ).pack(side='left')
+    
+    def _create_radar_controls(self, parent):
+        """创建雷达图控制组件"""
+        radar_control = ttk.Frame(parent)
         radar_control.pack(fill='x', pady=5)
         
+        # 刷新间隔控制
         ttk.Label(radar_control, text="刷新间隔:").pack(side='left', padx=5)
         self.interval_var = tk.StringVar(value="5秒")
-        interval_combo = ttk.Combobox(radar_control, textvariable=self.interval_var,
-                                     values=["1秒", "2秒", "5秒", "10秒", "30秒", "60秒"],
-                                     width=10, state='readonly')
+        interval_combo = ttk.Combobox(
+            radar_control, 
+            textvariable=self.interval_var,
+            values=["1秒", "2秒", "5秒", "10秒", "30秒", "60秒"],
+            width=10, 
+            state='readonly'
+        )
         interval_combo.pack(side='left', padx=5)
         
         # 扫描速度控制
         ttk.Label(radar_control, text="速度:").pack(side='left', padx=(15, 5))
         self.speed_var = tk.DoubleVar(value=1.0)
-        speed_slider = ttk.Scale(radar_control, from_=0.5, to=3.0, 
-                                variable=self.speed_var, orient='horizontal', length=100)
+        speed_slider = ttk.Scale(
+            radar_control, 
+            from_=0.5, 
+            to=3.0,
+            variable=self.speed_var, 
+            orient='horizontal', 
+            length=100
+        )
         speed_slider.pack(side='left', padx=5)
+        
         self.speed_label = ttk.Label(radar_control, text="1.0x")
         self.speed_label.pack(side='left')
         speed_slider.config(command=self._update_speed)
-        
-        # 雷达图画布
+    
+    def _create_radar_canvas(self, parent):
+        """创建雷达图画布"""
         self.radar_figure = Figure(figsize=(6, 5), dpi=100)
-        self.radar_canvas = FigureCanvasTkAgg(self.radar_figure, right_frame)
+        self.radar_canvas = FigureCanvasTkAgg(self.radar_figure, parent)
         self.radar_canvas.get_tk_widget().pack(fill='both', expand=True)
-        
-        # 初始化
-        self._refresh_adapters()
-        self._draw_empty_radar()
     
     def _draw_empty_radar(self):
         """绘制空雷达图（v1.4优化：12等分）"""
