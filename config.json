@@ -1,0 +1,63 @@
+{
+    "version": "1.0.0",
+    "log_level": "DEBUG",
+    "log_directory": "logs",
+    "timeout": {
+        "ping": 3,
+        "dns": 5,
+        "port_scan": 3,
+        "traceroute": 15,
+        "http": 10
+    },
+    "network": {
+        "default_dns_servers": [
+            {
+                "name": "Google DNS",
+                "ip": "8.8.8.8"
+            },
+            {
+                "name": "114 DNS",
+                "ip": "114.114.114.114"
+            },
+            {
+                "name": "Ali DNS",
+                "ip": "223.5.5.5"
+            }
+        ],
+        "test_targets": [
+            "www.baidu.com",
+            "www.google.com",
+            "8.8.8.8"
+        ],
+        "common_ports": [
+            21,
+            22,
+            23,
+            25,
+            53,
+            80,
+            110,
+            143,
+            443,
+            993,
+            995
+        ]
+    },
+    "performance": {
+        "latency_test_count": 5,
+        "bandwidth_test_size": 1024,
+        "concurrent_workers": 10
+    },
+    "ui": {
+        "theme": "default",
+        "window_width": 900,
+        "window_height": 700,
+        "font_size": 10
+    },
+    "features": {
+        "auto_save_reports": true,
+        "report_directory": "reports",
+        "enable_notifications": true,
+        "auto_update_check": false
+    }
+}

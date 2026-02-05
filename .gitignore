@@ -1,0 +1,53 @@
+# Python编译文件
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# 虚拟环境
+venv/
+env/
+ENV/
+.venv
+
+# IDE配置文件
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# 日志文件
+logs/
+*.log
+
+# 缓存文件
+*.cache
+.cache/
+
+# 数据文件
+signal_history.json
+wifi_speed_history.json
+
+# 操作系统文件
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# 临时文件
+*.tmp
+*.temp
+tmp/
+temp/
+
+# 报告输出目录
+reports/
+*.pdf
+
+# 配置文件（如包含敏感信息）
+# config.json  # 取消注释以忽略配置文件
+
+# Python包管理
+*.egg-info/
+dist/
+build/
