@@ -20,6 +20,7 @@ from .realtime_monitor_optimized import OptimizedRealtimeMonitorTab as RealtimeM
 from .heatmap import HeatmapTab
 from .deployment import DeploymentTab
 from .security_tab import SecurityTab
+from .config_manager import ConfigManager, get_config_manager, get_config
 
 __all__ = [
     # 主题组件
@@ -38,5 +39,9 @@ __all__ = [
     'RealtimeMonitorTab',
     'HeatmapTab',
     'DeploymentTab',
-    'SecurityTab'
+    'SecurityTab',
+    # 配置管理
+    'ConfigManager',
+    'get_config_manager',
+    'get_config'
 ]

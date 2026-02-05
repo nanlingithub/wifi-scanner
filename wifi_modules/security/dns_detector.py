@@ -228,7 +228,14 @@ class DNSHijackDetector:
             
             return None
             
-        except Exception:
+        except subprocess.TimeoutExpired:
+            self.logger.warning(f"DNS查询超时: {domain}")
+            return None
+        except subprocess.CalledProcessError as e:
+            self.logger.error(f"DNS查询命令执行失败: {e}")
+            return None
+        except Exception as e:
+            self.logger.exception(f"DNS查询未知错误: {e}")
             return None
     
     def _get_current_dns(self) -> List[str]:
@@ -258,8 +265,10 @@ class DNSHijackDetector:
                                 if self._is_valid_ip(ip):
                                     dns_servers.append(ip)
         
-        except Exception:
-            pass
+        except subprocess.CalledProcessError as e:
+            self.logger.error(f"获取DNS服务器失败: {e}")
+        except Exception as e:
+            self.logger.exception(f"获取当前DNS未知错误: {e}")
         
         return dns_servers
     
@@ -293,8 +302,10 @@ class DNSHijackDetector:
                                     gateway_info['mac'] = self._query_mac(ip)
                                     break
         
-        except Exception:
-            pass
+        except subprocess.CalledProcessError as e:
+            self.logger.error(f"获取网关信息失败: {e}")
+        except Exception as e:
+            self.logger.exception(f"获取网关未知错误: {e}")
         
         return gateway_info
     
@@ -322,8 +333,10 @@ class DNSHijackDetector:
                                 if '-' in part and len(part) == 17:  # XX-XX-XX-XX-XX-XX
                                     return part
         
-        except Exception:
-            pass
+        except subprocess.CalledProcessError as e:
+            self.logger.warning(f"ARP查询失败: {ip}, {e}")
+        except Exception as e:
+            self.logger.debug(f"查询MAC地址失败: {ip}, {e}")
         
         return None
     
@@ -338,7 +351,7 @@ class DNSHijackDetector:
                 if num < 0 or num > 255:
                     return False
             return True
-        except:
+        except (ValueError, AttributeError):
             return False
     
     def _is_private_ip(self, ip_str: str) -> bool:
