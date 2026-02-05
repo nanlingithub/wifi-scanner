@@ -2,8 +2,8 @@
 # -*- coding: utf-8 -*-
 """
 WiFi专业分析工具 - 模块化版本
-功能：WiFi网络扫描、信号分析、热力图生成、性能评估、信号罗盘测向、企业级报告生成、PCI-DSS安全评估
-版本：1.6
+功能：WiFi网络扫描、信号分析、热力图生成、性能评估、信号罗盘测向、企业级报告生成、PCI-DSS安全评估、WiFi 6/6E高级分析
+版本：1.6.2
 开发者：NL@China_SZ
 """
 
@@ -24,7 +24,7 @@ from wifi_modules.icon_system import PROFESSIONAL_ICONS, TAB_CONFIG
 from core.admin_utils import is_admin, get_admin_status_text, check_admin_rights
 
 # 版本信息
-VERSION = "1.6"
+VERSION = "1.6.2"
 DEVELOPER = "NL@China_SZ"
 APP_TITLE = "WiFi专业分析工具"
 
@@ -44,6 +44,7 @@ from wifi_modules import (
 )
 from wifi_modules.performance_window import PerformanceBenchmarkWindow
 from wifi_modules.enterprise_report_tab import EnterpriseReportTab
+from wifi_modules.wifi6_analyzer_tab import WiFi6AnalyzerTab
 
 # ✅ P2-3: 导入内存监控模块
 from core.memory_monitor import get_memory_monitor
@@ -162,6 +163,10 @@ class WiFiProfessionalApp:
         self.notebook.add(self.tabs['enterprise'].get_frame(), 
                          text="📊 企业级报告")
         
+        # Tab 8: WiFi 6/6E分析 (新增 v1.6.2)
+        self.tabs['wifi6'] = WiFi6AnalyzerTab(self.notebook)
+        # 标签页已在WiFi6AnalyzerTab内部添加
+        
         # 底部状态栏
         statusbar = ttk.Frame(self.root)
         statusbar.pack(fill='x', side='bottom')
@@ -229,6 +234,8 @@ class WiFiProfessionalApp:
 • 信号热力图 - 信号覆盖可视化与优化
 • 部署优化 - AP位置规划与覆盖分析
 • 安全检测 - WEP/WPA/加密方式检测
+• 企业级报告 - PDF/Excel专业分析报告
+• WiFi 6/6E分析 - OFDMA/BSS颜色/TWT/MU-MIMO (v1.6.2新增)
 
 Copyright © 2026 {DEVELOPER}
 保留所有权利
