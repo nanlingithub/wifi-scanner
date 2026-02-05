@@ -237,6 +237,25 @@ class TestConfigManager:
 class TestConfigManagerEdgeCases:
     """ConfigManager边界条件测试"""
     
+    @pytest.fixture
+    def temp_config_file(self, tmp_path):
+        """创建临时配置文件"""
+        config_file = tmp_path / "test_config.json"
+        config_data = {
+            'wifi_scanner': {'scan_interval': 5},
+            'test_key': 'test_value'
+        }
+        with open(config_file, 'w', encoding='utf-8') as f:
+            json.dump(config_data, f)
+        
+        ConfigManager._instance = None
+        ConfigManager._config_file = None
+        
+        yield str(config_file)
+        
+        ConfigManager._instance = None
+        ConfigManager._config_file = None
+    
     def test_config_file_not_exists(self, tmp_path):
         """测试配置文件不存在"""
         ConfigManager._instance = None
