@@ -374,8 +374,16 @@ class AdaptiveGridCalculator:
         Returns:
             平滑参数
         """
+        # 处理空数组
+        if len(signal_values) == 0:
+            return 0.0
+        
         # 计算信号方差
         signal_std = np.std(signal_values)
+        
+        # 处理NaN情况
+        if np.isnan(signal_std):
+            return 0.0
         
         # 方差大时使用更大的平滑参数
         if signal_std < 5:
