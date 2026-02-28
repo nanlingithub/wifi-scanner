@@ -28,7 +28,7 @@ jobs:
           pyinstaller --clean --noconfirm wifi_professional.spec
       
       - name: Upload Windows artifact
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: WiFiProfessional-Windows
           path: dist/wifi_professional.exe
@@ -67,7 +67,7 @@ jobs:
             dist/WiFiProfessional-macOS.dmg
       
       - name: Upload macOS artifact
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: WiFiProfessional-macOS
           path: dist/WiFiProfessional-macOS.dmg
@@ -99,7 +99,7 @@ jobs:
           pyinstaller --clean --noconfirm wifi_professional.spec
       
       - name: Upload Linux artifact
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: WiFiProfessional-Linux
           path: dist/wifi_professional
@@ -111,7 +111,7 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/')
     steps:
       - name: Download all artifacts
-        uses: actions/download-artifact@v3
+        uses: actions/download-artifact@v4
       
       - name: Create Release
         uses: softprops/action-gh-release@v1
