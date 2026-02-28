@@ -1252,26 +1252,134 @@ class WiFiAnalyzer:
         return networks
     
     def _parse_mac_wifi_scan(self, output):
-        """解析Mac系统的WiFi扫描结果"""
+        """解析Mac系统的WiFi扫描结果（增强版）
+        
+        airport -s 输出格式:
+        SSID BSSID             RSSI CHANNEL HT CC SECURITY
+        例如: MyWiFi 00:11:22:33:44:55 -45  6       Y  -- WPA2(PSK/AES/AES)
+        """
         networks = []
         lines = output.split('\n')
         
-        for line in lines:
-            if line.strip():
-                parts = line.split()
-                if len(parts) >= 2:
-                    bssid = parts[0]
-                    network = {
-                        'ssid': ' '.join(parts[1:]),  # SSID可能包含空格
-                        'bssid': bssid,  # MAC地址
-                        'signal_dbm': "未知",  # Mac的airport命令不直接提供信号强度
-                        'signal_percent': 0,  # 默认0而非"未知"
-                        'channel': "未知",
-                        'authentication': "未知",
-                        'vendor': self._get_vendor_from_mac(bssid)  # 添加厂商信息
-                    }
-                    networks.append(network)
+        # 跳过表头
+        for i, line in enumerate(lines):
+            if i == 0:  # 跳过第一行（表头）
+                continue
+                
+            line_stripped = line.strip()
+            if not line_stripped:
+                continue
+            
+            try:
+                # 使用正则表达式解析
+                # 格式: SSID BSSID RSSI CHANNEL HT CC SECURITY
+                parts = line_stripped.split()
+                
+                if len(parts) < 7:  # 至少需要7个字段
+                    continue
+                
+                # 查找 BSSID（MAC地址格式）
+                bssid_idx = -1
+                for idx, part in enumerate(parts):
+                    if re.match(r'^([0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}$', part):
+                        bssid_idx = idx
+                        break
+                
+                if bssid_idx == -1:
+                    continue
+                
+                # SSID: BSSID之前的所有部分
+                ssid = ' '.join(parts[:bssid_idx]) if bssid_idx > 0 else 'Hidden Network'
+                
+                # BSSID
+                bssid = parts[bssid_idx]
+                
+                # RSSI (信号强度，dBm)
+                rssi_str = parts[bssid_idx + 1] if len(parts) > bssid_idx + 1 else '-100'
+                try:
+                    rssi = int(rssi_str)
+                except ValueError:
+                    rssi = -100
+                
+                # 将 RSSI 转换为百分比
+                if rssi >= -50:
+                    signal_percent = 100
+                elif rssi <= -100:
+                    signal_percent = 0
+                else:
+                    signal_percent = 2 * (rssi + 100)
+                signal_percent = max(0, min(100, int(signal_percent)))
+                
+                # 信道
+                channel_str = parts[bssid_idx + 2] if len(parts) > bssid_idx + 2 else 'N/A'
+                try:
+                    channel = int(channel_str.replace(',', '').replace('+', '').replace('-', ''))
+                except (ValueError, AttributeError):
+                    channel = 'N/A'
+                
+                # 判断频段
+                if isinstance(channel, int):
+                    if channel <= 14:
+                        band = '2.4GHz'
+                    elif 36 <= channel <= 165:
+                        band = '5GHz'
+                    elif 1 <= channel <= 233:
+                        band = '6GHz'
+                    else:
+                        band = 'N/A'
+                else:
+                    band = 'N/A'
+                
+                # 安全性（最后的字段）
+                security_parts = parts[bssid_idx + 5:] if len(parts) > bssid_idx + 5 else ['Open']
+                security = ' '.join(security_parts)
+                
+                # 标准化认证方式
+                if 'WPA3' in security or 'SAE' in security:
+                    authentication = 'WPA3'
+                elif 'WPA2' in security:
+                    authentication = 'WPA2'
+                elif 'WPA' in security:
+                    authentication = 'WPA'
+                elif 'WEP' in security:
+                    authentication = 'WEP'
+                else:
+                    authentication = 'Open'
+                
+                # 提取加密方式
+                if 'AES' in security:
+                    encryption = 'AES'
+                elif 'TKIP' in security:
+                    encryption = 'TKIP'
+                elif 'WEP' in security:
+                    encryption = 'WEP'
+                else:
+                    encryption = 'None'
+                
+                # WiFi 标准检测
+                wifi_standard = self._detect_wifi_protocol(channel if isinstance(channel, int) else 0, band)
+                
+                network = {
+                    'ssid': ssid,
+                    'bssid': bssid,
+                    'signal_strength': f'{signal_percent}%',
+                    'signal_percent': signal_percent,
+                    'signal_dbm': f'{rssi} dBm',
+                    'channel': str(channel),
+                    'band': band,
+                    'authentication': authentication,
+                    'encryption': encryption,
+                    'security': security,
+                    'vendor': self._get_vendor_from_mac(bssid),
+                    'wifi_standard': wifi_standard
+                }
+                networks.append(network)
+                
+            except Exception as e:
+                self.logger.warning(f"解析 macOS WiFi 行失败: {line_stripped[:50]}... 错误: {e}")
+                continue
         
+        self.logger.info(f"macOS WiFi 扫描成功，发现 {len(networks)} 个网络")
         return networks
     
     def get_current_wifi_info(self):

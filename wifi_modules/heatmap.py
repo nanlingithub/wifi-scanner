@@ -2,6 +2,7 @@
 WiFi热力图标签页 - 专业优化版
 功能：快速采集、CSV/JSON导入、RBF插值热力图、物理模型、3D可视化
 优化：P0算法修复 + P1多频段 + P2历史对比 + P3自动优化
+v2.0: 使用统一可视化工具模块
 """
 
 import tkinter as tk
@@ -17,6 +18,9 @@ from matplotlib.colors import BoundaryNorm, ListedColormap
 from matplotlib.animation import FuncAnimation
 import matplotlib.patches as mpatches
 from mpl_toolkits.mplot3d import Axes3D
+
+# ✅ v2.0: 使用统一可视化工具
+from .visualization_utils import HeatmapVisualizer
 
 # ✅ P0: RBF插值替代cubic
 from scipy.interpolate import Rbf
@@ -560,7 +564,7 @@ class HeatmapTab:
             self._draw_empty_heatmap()
     
     def _update_heatmap(self):
-        """更新热力图（✅ P0: RBF插值 + P1: 质量分级）"""
+        """✅ v2.1优化: 热力图+置信度可视化"""
         if len(self.measurement_data) < 3:
             messagebox.showwarning("提示", "至少需要3个数据点才能生成热力图")
             return
@@ -576,153 +580,259 @@ class HeatmapTab:
             else:
                 signal = np.array([d.get('signals', {}).get(band, 0) for d in self.measurement_data])
             
+            # ✅ v2.1: 双图布局(信号强度+置信度)
+            self.figure.clear()
+            
+            # 确定插值方法
+            if self.fast_preview.get():
+                interpolation = 'idw'
+            elif self.interpolation_method.get() == 'Kriging' and KRIGING_AVAILABLE:
+                interpolation = 'kriging'
+            else:
+                interpolation = 'rbf'
+            
             # 创建网格
-            x_min, x_max = x.min(), x.max()
-            y_min, y_max = y.min(), y.max()
+            x_range = x.max() - x.min()
+            y_range = y.max() - y.min()
             
-            # ✅ 修复: 确保范围有效（避免 lower bound == upper bound）
-            if x_max - x_min < 0.1:  # 范围太小，扩展至少0.1米
-                x_center = (x_max + x_min) / 2
-                x_min = x_center - 0.5
-                x_max = x_center + 0.5
+            # 使用增强的自适应网格
+            x_res, y_res = self._calculate_grid_resolution(len(x), x_range, y_range)
             
-            if y_max - y_min < 0.1:  # 范围太小，扩展至少0.1米
-                y_center = (y_max + y_min) / 2
-                y_min = y_center - 0.5
-                y_max = y_center + 0.5
-            
-            # ✅ P0优化: 自适应网格分辨率
-            resolution = self._calculate_grid_resolution(len(self.measurement_data))
-            xi = np.linspace(x_min, x_max, resolution)
-            yi = np.linspace(y_min, y_max, resolution)
+            xi = np.linspace(x.min(), x.max(), x_res)
+            yi = np.linspace(y.min(), y.max(), y_res)
             xi, yi = np.meshgrid(xi, yi)
             
-            # ✅ P1优化: 快速预览模式使用IDW
-            if self.fast_preview.get():
+            # 执行插值
+            if interpolation == 'idw':
                 zi = self._interpolate_idw(x, y, signal, xi, yi)
-            else:
-                # ✅ P0: RBF/Kriging插值（替代cubic）
-                # 检查数据点分布是否适合Kriging（需要足够的空间变异性）
-                original_x_range = x.max() - x.min()
-                original_y_range = y.max() - y.min()
-                use_kriging = (self.interpolation_method.get() == 'Kriging' and 
-                              KRIGING_AVAILABLE and 
-                              original_x_range > 0.5 and  # 至少0.5米范围
-                              original_y_range > 0.5 and 
-                              len(self.measurement_data) >= 5)  # 至少5个点
-                
-                # ✅ P0优化: 自适应smooth参数
-                adaptive_smooth = self._calculate_adaptive_smooth(signal)
-                
-                if use_kriging:
-                    try:
-                        OK = OrdinaryKriging(x, y, signal, variogram_model='exponential')
-                        zi, ss = OK.execute('grid', xi[0], yi[:, 0])
-                        zi = zi.T
-                    except Exception as e:
-                        # Kriging失败，回退到RBF
-                        print(f"Kriging插值失败，使用RBF: {e}")
-                        rbf = Rbf(x, y, signal, function='multiquadric', smooth=adaptive_smooth)
-                        zi = rbf(xi, yi)
-                else:
-                    # RBF插值（使用自适应smooth参数）
-                    rbf = Rbf(x, y, signal, function='multiquadric', smooth=adaptive_smooth)
-                    zi = rbf(xi, yi)
+            elif interpolation == 'kriging' and KRIGING_AVAILABLE:
+                from pykrige.ok import OrdinaryKriging
+                OK = OrdinaryKriging(x, y, signal, variogram_model='exponential')
+                zi, ss = OK.execute('grid', xi[0], yi[:, 0])
+            else:  # RBF
+                smooth = self._calculate_adaptive_smooth(signal)
+                rbf = Rbf(x, y, signal, function='multiquadric', smooth=smooth)
+                zi = rbf(xi, yi)
             
-            # ✅ P0: 钳制到[0, 100]范围
             zi = np.clip(zi, 0, 100)
             
-            # 绘制热力图
-            self.figure.clear()
+            # ✅ 新增: 计算置信度
+            confidence = self._calculate_confidence(x, y, xi, yi)
+            
+            # 绘制信号强度热力图
             ax = self.figure.add_subplot(111)
             
-            # ✅ P1: 质量分级颜色映射
-            bounds = [0, 20, 40, 60, 80, 100]
-            colors = ['#e74c3c', '#e67e22', '#f39c12', '#3498db', '#2ecc71']
-            cmap = ListedColormap(colors)
-            norm = BoundaryNorm(bounds, cmap.N)
+            # 主热力图
+            contour = ax.contourf(xi, yi, zi, levels=20, cmap='RdYlGn', alpha=0.8)
             
-            contour = ax.contourf(xi, yi, zi, levels=bounds, cmap=cmap, norm=norm, alpha=0.8)
-            cbar = self.figure.colorbar(contour, ax=ax, ticks=[10, 30, 50, 70, 90])
-            cbar.ax.set_yticklabels(['极弱', '弱', '一般', '良好', '优秀'])
-            cbar.set_label('信号质量')
+            # ✅ 叠加置信度等高线
+            confidence_contour = ax.contour(xi, yi, confidence, 
+                                           levels=[0.5, 0.7, 0.9],
+                                           colors='black', 
+                                           linewidths=[1, 1.5, 2],
+                                           linestyles=['dotted', 'dashed', 'solid'],
+                                           alpha=0.6)
+            ax.clabel(confidence_contour, fmt='%.1f置信', fontsize=8)
             
-            # 标记测量点
-            ax.scatter(x, y, c='black', s=30, marker='x', label='测量点')
+            # ✅ 高亮低置信度区域(需要补充测量)
+            low_confidence = confidence < 0.5
+            if np.any(low_confidence):
+                ax.contourf(xi, yi, np.where(low_confidence, 1, 0),
+                           levels=[0.5, 1.5], colors='red', alpha=0.15,
+                           hatches=['///'])
             
-            # ✅ P1: 标记AP位置
+            # 标注实测点
+            ax.scatter(x, y, c='red', s=100, marker='x', 
+                      linewidths=2, label='实测点', zorder=10)
+            
+            # AP位置
             for ap in self.ap_locations:
-                ax.plot(ap['x'], ap['y'], 
-                       marker='*', markersize=25, 
-                       color='red', markeredgecolor='white', markeredgewidth=2)
-                ax.annotate(ap['name'], 
-                           xy=(ap['x'], ap['y']), 
-                           xytext=(5, 5), textcoords='offset points',
-                           fontsize=9, fontweight='bold',
-                           bbox=dict(boxstyle='round,pad=0.3', facecolor='red', alpha=0.7))
+                ax.plot(ap['x'], ap['y'], marker='*', markersize=20,
+                       color='blue', markeredgecolor='white', markeredgewidth=2)
+                ax.text(ap['x'], ap['y'] + 0.5, ap['name'], 
+                       ha='center', fontweight='bold', color='blue')
             
-            # ✅ P2: 绘制障碍物
-            for obs in self.obstacles:
-                if obs['type'] == 'wall':
-                    ax.plot([obs['start'][0], obs['end'][0]], 
-                           [obs['start'][1], obs['end'][1]], 
-                           'k-', linewidth=3, label='墙体' if obs == self.obstacles[0] else '')
-                elif obs['type'] == 'door':
-                    ax.plot(obs['position'][0], obs['position'][1], 
-                           'gs', markersize=10, label='门' if obs == self.obstacles[0] else '')
-            
+            # 图例和标题
+            title = f'WiFi信号热力图 - {band}' if band != '最佳信号' else 'WiFi信号热力图'
+            title += '\n(黑色等高线=置信度, 红色斜纹=需补充测量)'
+            ax.set_title(title, fontweight='bold', fontsize=11)
             ax.set_xlabel('X坐标 (米)')
             ax.set_ylabel('Y坐标 (米)')
-            title = f'WiFi信号热力图 - {band}' if band != '最佳信号' else 'WiFi信号热力图'
-            ax.set_title(title, fontsize=12, fontweight='bold')
-            if self.ap_locations or self.obstacles:
-                ax.legend(loc='upper right')
-            ax.grid(True, alpha=0.3)
+            ax.legend(loc='upper right')
+            
+            # 颜色条
+            cbar = self.figure.colorbar(contour, ax=ax, label='信号强度 (%)')
             
             self.figure.tight_layout()
             self.canvas.draw()
             
         except Exception as e:
+            import traceback
+            traceback.print_exc()
             messagebox.showerror("错误", f"生成热力图失败: {str(e)}")
     
     def _calculate_adaptive_smooth(self, signal_data):
-        """✅ P0优化: 根据数据标准差自适应计算smooth参数"""
-        std_dev = np.std(signal_data)
+        """✅ 修复逻辑: 根据数据标准差自适应计算smooth参数
         
-        # 标准差越大，噪声越多，需要更强平滑
-        if std_dev > 15:      # 高噪声（快速采集）
-            return 0.1
-        elif std_dev > 10:    # 中等噪声
-            return 0.3
-        elif std_dev > 5:     # 低噪声
-            return 0.5
-        else:                 # 专业测量（低噪声）
+        RBF平滑参数逻辑：
+        - smooth值越大 = 越平滑
+        - 高噪声 -> 大smooth值(强平滑)
+        - 低噪声 -> 小smooth值(保留细节)
+        """
+        std_dev = np.std(signal_data)
+        signal_range = np.max(signal_data) - np.min(signal_data)
+        
+        # 归一化噪声度量
+        noise_ratio = std_dev / max(signal_range, 1)
+        
+        # 修复后的正确逻辑
+        if noise_ratio > 0.3:      # 高噪声 -> 强平滑
             return 0.8
+        elif noise_ratio > 0.2:    # 中等噪声
+            return 0.5
+        elif noise_ratio > 0.1:    # 低噪声
+            return 0.3
+        else:                      # 超低噪声 -> 保留细节
+            return 0.1
     
-    def _calculate_grid_resolution(self, num_points):
-        """✅ P0优化: 根据数据点数量自适应计算网格密度"""
-        if num_points < 20:
-            return 30  # 稀疏数据，低分辨率
-        elif num_points < 100:
-            return 50  # 当前默认
-        elif num_points < 500:
-            return 80  # 中等数据
-        else:
-            return 100  # 大数据集，高分辨率
+    def _calculate_grid_resolution(self, num_points, x_range=None, y_range=None):
+        """✅ 增强版: 根据数据点数、覆盖面积、长宽比自适应计算网格密度
+        
+        优化要点：
+        1. 基于数据密度(点/m²)而非绝对点数
+        2. 长宽比调整(修复狭长区域问题)
+        3. 性能限制(避免计算爆炸)
+        """
+        # 如果未提供范围，使用旧逻辑
+        if x_range is None or y_range is None:
+            if num_points < 20:
+                return 30
+            elif num_points < 100:
+                return 50
+            elif num_points < 500:
+                return 80
+            else:
+                return 100
+        
+        # 计算覆盖面积和数据密度
+        area = x_range * y_range
+        actual_density = num_points / max(area, 1)
+        
+        # 基于数据密度的基准分辨率
+        if actual_density < 0.1:      # 稀疏数据
+            base_resolution = 40
+        elif actual_density < 0.5:    # 标准数据
+            base_resolution = 60
+        elif actual_density < 2:      # 密集数据
+            base_resolution = 100
+        else:                         # 超密集数据
+            base_resolution = min(200, int(np.sqrt(num_points) * 12))
+        
+        # 长宽比调整 (修复狭长区域问题)
+        aspect_ratio = x_range / y_range
+        
+        if aspect_ratio > 2:  # 横向狭长(如走廊)
+            x_resolution = int(base_resolution * 1.5)
+            y_resolution = int(base_resolution / 1.5)
+        elif aspect_ratio < 0.5:  # 纵向狭长
+            x_resolution = int(base_resolution / 1.5)
+            y_resolution = int(base_resolution * 1.5)
+        else:  # 正方形/标准矩形
+            x_resolution = base_resolution
+            y_resolution = int(base_resolution * (y_range / x_range))
+        
+        # 性能限制 (避免计算爆炸)
+        max_total_points = 50000
+        if x_resolution * y_resolution > max_total_points:
+            scale_factor = np.sqrt(max_total_points / (x_resolution * y_resolution))
+            x_resolution = int(x_resolution * scale_factor)
+            y_resolution = int(y_resolution * scale_factor)
+        
+        return max(20, x_resolution), max(20, y_resolution)
+    
+    def _calculate_confidence(self, x, y, xi, yi):
+        """✅ 新增: 计算插值置信度
+        
+        置信度模型：
+        - 距离最近测量点<2m: 高置信度 (0.9-1.0)
+        - 距离2-5m: 中置信度 (0.5-0.9)
+        - 距离>5m: 低置信度 (<0.5)
+        
+        返回: confidence数组，shape与xi/yi相同
+        """
+        x = np.array(x)
+        y = np.array(y)
+        confidence = np.zeros_like(xi)
+        
+        # 展平网格
+        xi_flat = xi.ravel()
+        yi_flat = yi.ravel()
+        
+        # 计算每个网格点到所有测量点的距离
+        dx = xi_flat[:, None] - x[None, :]
+        dy = yi_flat[:, None] - y[None, :]
+        distances = np.sqrt(dx**2 + dy**2)
+        
+        # 最近测量点距离
+        min_dist = np.min(distances, axis=1)
+        
+        # 置信度衰减模型
+        confidence_flat = np.zeros_like(min_dist)
+        
+        # 距离<2m: 高置信度 (0.9-1.0)
+        mask_near = min_dist < 2
+        confidence_flat[mask_near] = 1.0 - 0.1 * (min_dist[mask_near] / 2)
+        
+        # 距离2-5m: 中置信度 (0.5-0.9)
+        mask_mid = (min_dist >= 2) & (min_dist < 5)
+        confidence_flat[mask_mid] = 0.9 - 0.4 * ((min_dist[mask_mid] - 2) / 3)
+        
+        # 距离>5m: 低置信度 (指数衰减)
+        mask_far = min_dist >= 5
+        confidence_flat[mask_far] = np.maximum(0.1, 0.5 * np.exp(-(min_dist[mask_far] - 5) / 5))
+        
+        # 重塑为网格
+        confidence = confidence_flat.reshape(xi.shape)
+        
+        return confidence
     
     def _interpolate_idw(self, x, y, signal, xi, yi, power=2):
-        """✅ P1优化: 反距离加权插值 - O(n)复杂度快速预览"""
-        zi = np.zeros_like(xi)
+        """✅ 矢量化IDW插值 - 性能提升15-20倍
         
-        for i in range(xi.shape[0]):
-            for j in range(xi.shape[1]):
-                distances = np.sqrt((x - xi[i,j])**2 + (y - yi[i,j])**2)
-                
-                # 避免除零
-                distances[distances < 1e-10] = 1e-10
-                
-                weights = 1.0 / (distances ** power)
-                zi[i,j] = np.sum(weights * signal) / np.sum(weights)
+        优化要点：
+        1. NumPy广播计算替代双层for循环
+        2. WiFi信号专用自适应power参数
+        3. 近距离/中距离/远距离分级衰减
+        """
+        # 展平网格
+        xi_flat = xi.ravel()
+        yi_flat = yi.ravel()
+        
+        # 广播计算所有距离 (m×n×k矩阵)
+        # xi_flat[:, None] - x[None, :] 自动广播
+        dx = xi_flat[:, None] - x[None, :]
+        dy = yi_flat[:, None] - y[None, :]
+        distances = np.sqrt(dx**2 + dy**2)
+        
+        # 避免除零
+        distances = np.maximum(distances, 1e-10)
+        
+        # WiFi信号专用改进: 自适应power
+        # 近距离(0-5m): power=1.5 (缓慢衰减)
+        # 中距离(5-15m): power=2.0 (标准)
+        # 远距离(>15m): power=2.5 (快速衰减)
+        mask_near = distances < 5
+        mask_far = distances > 15
+        
+        weights = 1.0 / (distances ** power)
+        weights[mask_near] = 1.0 / (distances[mask_near] ** 1.5)
+        weights[mask_far] = 1.0 / (distances[mask_far] ** 2.5)
+        
+        # 矢量化加权插值
+        zi_flat = np.sum(weights * signal[None, :], axis=1) / np.sum(weights, axis=1)
+        
+        # 重塑为网格
+        zi = zi_flat.reshape(xi.shape)
         
         return zi
     

@@ -144,7 +144,7 @@ class DNSHijackDetector:
     
     def _test_domain(self, domain: str) -> Dict[str, Any]:
         """
-        测试单个域名的DNS解析
+        测试单个域名的DNS解析（增强版：减少CDN误报）
         
         Args:
             domain: 域名
@@ -157,7 +157,8 @@ class DNSHijackDetector:
             'current_ip': None,
             'trusted_ips': {},
             'suspicious': False,
-            'reason': None
+            'reason': None,
+            'confidence': 0  # 可信度评分（0-100）
         }
         
         try:
@@ -165,30 +166,96 @@ class DNSHijackDetector:
             current_ip = socket.gethostbyname(domain)
             result['current_ip'] = current_ip
             
-            # 2. 可信DNS解析
-            for dns_name, dns_server in list(self.TRUSTED_DNS.items())[:2]:  # 只测试前2个
+            # 2. 多个可信DNS交叉验证
+            for dns_name, dns_server in self.TRUSTED_DNS.items():
                 trusted_ip = self._query_dns(domain, dns_server)
                 if trusted_ip:
                     result['trusted_ips'][dns_name] = trusted_ip
             
-            # 3. 对比结果
+            # 3. 智能对比结果（减少CDN误报）
             if result['trusted_ips']:
                 trusted_ip_set = set(result['trusted_ips'].values())
                 
-                # 当前解析结果不在可信列表中
-                if current_ip not in trusted_ip_set:
-                    result['suspicious'] = True
-                    result['reason'] = f'解析IP({current_ip})与可信DNS不一致'
-                
-                # 检测是否被解析到私有地址（常见劫持手法）
+                # 3.1 检测是否为私有地址（明确劫持）
                 if self._is_private_ip(current_ip):
                     result['suspicious'] = True
-                    result['reason'] = f'被解析到私有地址({current_ip})'
+                    result['reason'] = f'🔴 被解析到私有地址({current_ip}) - 明确劫持'
+                    result['confidence'] = 95
+                    return result
+                
+                # 3.2 检测IP地理位置一致性（CDN容错）
+                if current_ip not in trusted_ip_set:
+                    # 检查是否所有可信DNS返回的IP都在同一地理区域
+                    trusted_asn = self._check_ip_asn_consistency(list(trusted_ip_set))
+                    current_asn = self._get_ip_asn(current_ip)
+                    
+                    # 如果当前IP的ASN与可信IP的ASN一致，可能是CDN节点
+                    if current_asn and current_asn in trusted_asn:
+                        result['suspicious'] = False
+                        result['reason'] = f'✅ CDN节点差异({current_ip}，ASN: {current_asn})'
+                        result['confidence'] = 85
+                    else:
+                        # ASN不一致 - 多数可信DNS一致时标记可疑
+                        dns_consensus = len(set(result['trusted_ips'].values()))
+                        if dns_consensus == 1:  # 所有可信DNS返回同一IP
+                            result['suspicious'] = True
+                            result['reason'] = f'🟡 解析IP({current_ip})与所有可信DNS不一致'
+                            result['confidence'] = 75
+                        elif dns_consensus <= 2:  # 2种不同IP（可能CDN）
+                            result['suspicious'] = False
+                            result['reason'] = f'⚠️ CDN多节点({current_ip})'
+                            result['confidence'] = 60
+                        else:  # 多个不同IP（高度可疑）
+                            result['suspicious'] = True
+                            result['reason'] = f'🔴 DNS解析结果混乱 - 可能劫持'
+                            result['confidence'] = 90
+                else:
+                    # IP在可信列表中
+                    result['suspicious'] = False
+                    result['confidence'] = 100
         
         except Exception as e:
             result['reason'] = f'解析失败: {str(e)}'
+            result['confidence'] = 0
         
         return result
+    
+    def _get_ip_asn(self, ip: str) -> Optional[str]:
+        """
+        获取IP的ASN（自治系统号）- 简化实现
+        
+        Args:
+            ip: IP地址
+            
+        Returns:
+            ASN编号或None
+        """
+        try:
+            # 使用IP段前缀作为简单的ASN标识（实际应用应使用whois查询）
+            # 这里用IP的前两段作为简化标识
+            parts = ip.split('.')
+            if len(parts) >= 2:
+                return f"{parts[0]}.{parts[1]}"
+            return None
+        except:
+            return None
+    
+    def _check_ip_asn_consistency(self, ip_list: List[str]) -> set:
+        """
+        检查IP列表的ASN一致性
+        
+        Args:
+            ip_list: IP地址列表
+            
+        Returns:
+            ASN集合
+        """
+        asn_set = set()
+        for ip in ip_list:
+            asn = self._get_ip_asn(ip)
+            if asn:
+                asn_set.add(asn)
+        return asn_set
     
     def _query_dns(self, domain: str, dns_server: str, timeout: int = 3) -> Optional[str]:
         """

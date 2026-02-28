@@ -38,6 +38,116 @@ else:
     CREATE_NO_WINDOW = 0
 
 
+class ErrorHandler:
+    """✅ 新增: 统一错误处理器 - 提供友好的错误提示"""
+    
+    ERROR_MESSAGES = {
+        'no_adapter': {
+            'title': '未检测到WiFi适配器',
+            'message': '可能的原因：\n'
+                      '1. WiFi适配器已禁用\n'
+                      '2. 驱动程序未安装\n'
+                      '3. 硬件故障\n\n'
+                      '建议操作：\n'
+                      '• 检查设备管理器中的网络适配器\n'
+                      '• 尝试重新启用WiFi\n'
+                      '• 更新网卡驱动程序',
+            'type': 'warning'
+        },
+        'scan_timeout': {
+            'title': '扫描超时',
+            'message': '扫描WiFi网络超时（>60秒）\n\n'
+                      '可能的原因：\n'
+                      '1. 系统繁忙\n'
+                      '2. 网卡响应慢\n\n'
+                      '建议操作：\n'
+                      '• 稍后重试\n'
+                      '• 重启WiFi适配器',
+            'type': 'error'
+        },
+        'permission_denied': {
+            'title': '权限不足',
+            'message': '某些功能需要管理员权限\n\n'
+                      '建议操作：\n'
+                      '• 右键程序图标\n'
+                      '• 选择"以管理员身份运行"',
+            'type': 'warning'
+        },
+        'network_error': {
+            'title': '网络错误',
+            'message': '无法获取网络信息\n\n'
+                      '建议操作：\n'
+                      '• 检查WiFi是否已开启\n'
+                      '• 尝试刷新适配器',
+            'type': 'error'
+        }
+    }
+    
+    @staticmethod
+    def handle_error(exception, context="操作"):
+        """处理错误并显示友好提示"""
+        error_type = ErrorHandler._classify_error(exception)
+        error_info = ErrorHandler.ERROR_MESSAGES.get(error_type, {
+            'title': f'{context}失败',
+            'message': f'发生未知错误\n\n'
+                      f'错误详情: {str(exception)}\n\n'
+                      f'建议操作：\n'
+                      f'• 查看日志文件获取详细信息\n'
+                      f'• 联系技术支持',
+            'type': 'error'
+        })
+        
+        if error_info['type'] == 'warning':
+            messagebox.showwarning(error_info['title'], error_info['message'])
+        else:
+            messagebox.showerror(error_info['title'], error_info['message'])
+    
+    @staticmethod
+    def _classify_error(exception):
+        """分类错误"""
+        error_str = str(exception).lower()
+        
+        if 'no adapter' in error_str or 'not found' in error_str:
+            return 'no_adapter'
+        elif 'timeout' in error_str:
+            return 'scan_timeout'
+        elif 'permission' in error_str or 'access denied' in error_str:
+            return 'permission_denied'
+        elif 'network' in error_str or 'connection' in error_str:
+            return 'network_error'
+        else:
+            return 'unknown'
+
+
+class WiFiScanCache:
+    """✅ 新增: WiFi扫描缓存管理器 - 优化扫描速度"""
+    
+    def __init__(self, ttl=30):
+        self.cache = {}
+        self.ttl = ttl  # 缓存有效期(秒)
+    
+    def get(self, key):
+        """获取缓存"""
+        if key in self.cache:
+            data, timestamp = self.cache[key]
+            if time.time() - timestamp < self.ttl:
+                return data
+            else:
+                del self.cache[key]  # 过期删除
+        return None
+    
+    def set(self, key, data):
+        """设置缓存"""
+        self.cache[key] = (data, time.time())
+    
+    def invalidate(self, key=None):
+        """失效缓存"""
+        if key is None:
+            self.cache.clear()
+        elif key in self.cache:
+            del self.cache[key]
+
+
 class NetworkOverviewTab:
     """网络概览标签页 v1.4（完整功能 + 优化雷达）"""
     
@@ -45,6 +155,7 @@ class NetworkOverviewTab:
         # P1修复: 使用weakref防止循环引用
         self.parent_ref = weakref.ref(parent) if parent else None
         self.parent = parent  # 保留直接引用以兼容现有代码
+        self.notebook = parent  # v2.0: 保存notebook引用用于标签页跳转
         self.wifi_analyzer = wifi_analyzer
         self.frame = ttk.Frame(parent)
         
@@ -77,6 +188,9 @@ class NetworkOverviewTab:
         
         # P1修复: 定时器管理
         self.after_ids = []  # 存储所有定时器ID，防止内存泄漏
+        
+        # ✅ 新增: 扫描缓存管理器
+        self.scan_cache = WiFiScanCache(ttl=30)
         
         # 动画效果（保留旧版兼容）
         self.pulse_phase = 0
@@ -191,7 +305,7 @@ class NetworkOverviewTab:
         
         # 分析功能按钮
         buttons_config = [
-            {'text': '📊 信道', 'command': self._show_channel_analysis, 'style': 'info'},
+            {'text': '📊 信道', 'command': self._jump_to_channel_analysis, 'style': 'info'},
             {'text': '📈 趋势', 'command': self._show_history_chart, 'style': 'info'},
             {'text': '📄 报告', 'command': self._export_diagnostic_report, 'style': 'primary'},
             {'text': '🧭 罗盘', 'command': self._show_signal_compass, 'style': 'success'}
@@ -638,10 +752,11 @@ class NetworkOverviewTab:
         self.speed_label.config(text=f"{self.rotation_speed:.1f}x")
     
     def _start_queue_processor(self):
-        """启动队列处理器"""
+        """✅ 优化: 启动队列处理器（降低更新频率）"""
         try:
+            # ✅ 增加批量处理数量
             updates_processed = 0
-            while updates_processed < 5:
+            while updates_processed < 10:  # 从5增加到10
                 try:
                     update = self.update_queue.get_nowait()
                     if update['type'] == 'radar_update':
@@ -650,44 +765,59 @@ class NetworkOverviewTab:
                     break
             
             if updates_processed > 0:
-                self._update_radar()
+                # ✅ 节流: 距离上次绘制超过200ms才更新
+                current_time = time.time() * 1000
+                if current_time - self.last_draw_time > 200:  # 200ms = 5fps
+                    self._update_radar()
+                    self.last_draw_time = current_time
                 
         except Exception as e:
             print(f"[警告] 队列处理异常: {e}")
         finally:
-            # ✅ M1修复: 记录after_id
-            after_id = self.parent.after(150, self._start_queue_processor)
+            # ✅ 降低处理频率: 150ms → 300ms
+            after_id = self.parent.after(300, self._start_queue_processor)
             self.after_ids.append(after_id)
     
     def _run_animation_effects(self):
-        """运行动画效果"""
+        """✅ 优化: 运行动画效果（智能刷新）"""
         if not self.animation_running:
             return
         
         try:
-            self.pulse_phase = (self.pulse_phase + 0.025) % 1.0
+            self.pulse_phase = (self.pulse_phase + 0.02) % 1.0  # 降低步进
             
             for ssid in list(self.update_flash.keys()):
                 self.update_flash[ssid] = max(0, self.update_flash[ssid] - 0.04)
                 if self.update_flash[ssid] < 0.01:
                     self.update_flash[ssid] = 0
             
-            has_flash = any(v > 0 for v in self.update_flash.values())
-            phase_key_point = abs(self.pulse_phase % 0.25) < 0.05
+            # ✅ 只在必要时更新
+            should_update = False
             
-            if (has_flash or phase_key_point) and hasattr(self, 'wifi_signals') and len(self.wifi_signals) > 0:
+            has_flash = any(v > 0 for v in self.update_flash.values())
+            if has_flash:
+                should_update = True
+            
+            # 检查是否在关键相位点
+            phase_key_point = abs(self.pulse_phase % 0.25) < 0.02
+            if phase_key_point:
+                should_update = True
+            
+            # ✅ 仅在需要时入队
+            if should_update and hasattr(self, 'wifi_signals') and len(self.wifi_signals) > 0:
                 try:
-                    if self.update_queue.qsize() < 2:
+                    if self.update_queue.qsize() < 5:
                         self.update_queue.put_nowait({'type': 'radar_update'})
                 except queue.Full:
-                    print('[警告] 队列已满，数据已丢弃')  # P2修复: 添加日志
+                    pass  # 忽略队列满
         
         except Exception as e:
             print(f"[警告] 动画效果异常: {e}")
         
         finally:
             if self.animation_running:
-                after_id = self.parent.after(120, self._run_animation_effects)
+                # ✅ 降低刷新频率: 120ms → 200ms (5fps)
+                after_id = self.parent.after(200, self._run_animation_effects)
                 self.after_ids.append(after_id)
     
     # ========== 以下保留完整的旧版功能 ==========
@@ -763,11 +893,172 @@ class NetworkOverviewTab:
             messagebox.showerror("错误", f"获取适配器失败: {str(e)}")
     
     def _scan_wifi(self):
-        """扫描WiFi网络"""
-        scan_progress = ttk.Progressbar(self.frame, mode='indeterminate')
-        scan_progress.pack(pady=5)
-        scan_progress.start()
+        """✅ 优化: WiFi扫描（带详细进度反馈）"""
+        # 创建进度对话框
+        progress_window = tk.Toplevel(self.frame)
+        progress_window.title("扫描进度")
+        progress_window.geometry("450x250")
+        progress_window.transient(self.frame)
+        progress_window.grab_set()
         
+        # 进度条
+        progress_var = tk.IntVar(value=0)
+        progress_bar = ttk.Progressbar(progress_window, variable=progress_var,
+                                       maximum=100, mode='determinate')
+        progress_bar.pack(fill='x', padx=20, pady=20)
+        
+        # 状态文本
+        status_label = tk.Label(progress_window, text="准备扫描...",
+                               font=('Microsoft YaHei', 10))
+        status_label.pack(pady=10)
+        
+        # 详细信息
+        detail_text = tk.Text(progress_window, height=6, width=50, wrap='word',
+                             font=('Microsoft YaHei', 9))
+        detail_text.pack(fill='both', expand=True, padx=20, pady=10)
+        
+        def update_progress(percent, status, detail=""):
+            """更新进度"""
+            try:
+                progress_var.set(percent)
+                status_label.config(text=status)
+                if detail:
+                    detail_text.insert('end', detail + '\n')
+                    detail_text.see('end')
+                progress_window.update()
+            except:
+                pass  # 窗口可能已关闭
+        
+        def scan_worker():
+            try:
+                # 阶段1: 检查缓存 (0-10%)
+                update_progress(5, "检查扫描缓存...", "查找最近扫描结果")
+                cached_networks = self.scan_cache.get('networks')
+                
+                if cached_networks is not None:
+                    update_progress(50, "使用缓存数据", 
+                                  f"发现缓存（{len(cached_networks)}个网络）")
+                    time.sleep(0.3)
+                    self.scanned_networks = cached_networks
+                    self.frame.after(0, self._update_wifi_tree, cached_networks)
+                    update_progress(100, "完成（使用缓存）", 
+                                  "✓ 数据加载完成\n提示：点击'强制刷新'获取最新数据")
+                    time.sleep(1)
+                    progress_window.destroy()
+                    return
+                
+                # 阶段2: 获取适配器 (10-20%)
+                update_progress(10, "获取WiFi适配器...", "检测网卡信息")
+                adapters = self.wifi_analyzer.get_wifi_interfaces()
+                if not adapters:
+                    raise Exception("未找到WiFi适配器")
+                update_progress(15, "适配器检测完成", 
+                              f"✓ 找到{len(adapters)}个适配器")
+                
+                # 阶段3: 执行扫描 (20-70%)
+                update_progress(20, "扫描周围网络...", "执行系统扫描命令（可能需要10-30秒）")
+                networks = self.wifi_analyzer.scan_wifi_networks(force_refresh=True)
+                
+                if not networks:
+                    update_progress(70, "扫描完成", "✗ 未发现WiFi网络")
+                    self.frame.after(0, lambda: self._show_empty_state(
+                        "未发现WiFi网络\n\n建议：检查WiFi是否已开启"
+                    ))
+                else:
+                    update_progress(70, f"扫描完成", 
+                                  f"✓ 发现{len(networks)}个网络")
+                
+                # 阶段4: 数据解析 (70-85%)
+                update_progress(75, "解析网络信息...", "处理SSID/BSSID/信道")
+                time.sleep(0.2)
+                update_progress(80, "识别厂商信息...", "查询OUI数据库")
+                time.sleep(0.2)
+                
+                # 阶段5: 信道分析 (85-95%)
+                update_progress(85, "分析信道重叠...", "检测干扰")
+                overlaps = self._detect_channel_overlap(networks)
+                update_progress(90, "生成统计信息...", 
+                              f"检测到{len(overlaps)}组重叠" if overlaps else "无重叠")
+                
+                # 阶段6: 缓存和UI更新 (95-100%)
+                update_progress(95, "更新界面...", "刷新网络列表")
+                self.scan_cache.set('networks', networks)  # ✅ 写入缓存
+                self.scanned_networks = networks
+                self.frame.after(0, self._update_wifi_tree, networks)
+                
+                update_progress(100, "扫描完成！", 
+                              f"✓ 共发现{len(networks)}个网络\n✓ 数据已缓存（30秒有效）")
+                
+                time.sleep(1)
+                progress_window.destroy()
+                
+            except Exception as e:
+                update_progress(0, "扫描失败", f"✗ 错误: {str(e)}")
+                self.frame.after(0, lambda: ErrorHandler.handle_error(e, context="WiFi扫描"))
+                time.sleep(2)
+                progress_window.destroy()
+        
+        # 启动扫描线程
+        threading.Thread(target=scan_worker, daemon=True).start()
+    
+    def _update_wifi_tree(self, networks):
+        """✅ 新增: 更新WiFi列表（从扫描数据）"""
+        self.wifi_tree.delete(*self.wifi_tree.get_children())
+        
+        # 按信号强度排序
+        networks_sorted = sorted(networks, key=lambda x: x.get('signal_percent', 0), reverse=True)
+        
+        for idx, network in enumerate(networks_sorted, 1):
+            signal_percent = network.get('signal_percent', 0)
+            if isinstance(signal_percent, str):
+                signal_percent = int(signal_percent.rstrip('%')) if signal_percent != '未知' else 0
+            
+            signal_dbm = -100 + (signal_percent * 0.7) if signal_percent > 0 else -100
+            
+            quality_indicator, _ = self._get_signal_quality_indicator(signal_percent)
+            bar_length = int(signal_percent / 10)
+            signal_bar = quality_indicator + ' ' + '█' * bar_length + '░' * (10 - bar_length)
+            
+            wifi_standard = network.get('wifi_standard', 'N/A')
+            band = network.get('band', 'N/A')
+            if band == '6GHz':
+                wifi_standard = f"⚡{wifi_standard}"
+            
+            values = (
+                "", idx, network.get('ssid', 'N/A'), signal_bar,
+                f"{signal_percent}%", f"{signal_dbm:.0f} dBm",
+                network.get('vendor', '未知'), network.get('bssid', 'N/A'),
+                network.get('channel', 'N/A'), band, wifi_standard,
+                network.get('authentication', 'N/A')
+            )
+            
+            tags = []
+            if band == '6GHz':
+                tags.append('wifi6e')
+            elif signal_percent >= 80:
+                tags.append('excellent')
+            elif signal_percent >= 60:
+                tags.append('good')
+            elif signal_percent >= 40:
+                tags.append('fair')
+            else:
+                tags.append('poor')
+            
+            self.wifi_tree.insert('', 'end', values=values, tags=tuple(tags))
+        
+        # 频段统计
+        band_stats = {'2.4GHz': 0, '5GHz': 0, '6GHz': 0}
+        for net in networks:
+            band = net.get('band', 'N/A')
+            if band in band_stats:
+                band_stats[band] += 1
+        
+        stats_msg = f"扫描完成，发现 {len(networks)} 个WiFi网络\n" + \
+                   f"2.4GHz: {band_stats['2.4GHz']} | 5GHz: {band_stats['5GHz']} | 6GHz: {band_stats['6GHz']}"
+        messagebox.showinfo("完成", stats_msg)
+    
+    def _scan_wifi_old(self):
+        """旧版扫描方法（保留作为备份）"""
         def scan_worker():
             try:
                 self._scan_wifi_worker()
@@ -778,10 +1069,24 @@ class NetworkOverviewTab:
         
         threading.Thread(target=scan_worker, daemon=True).start()
     
+    def _show_empty_state(self, message="暂无数据"):
+        """✅ 新增: 显示空状态提示"""
+        # 清空列表
+        self.wifi_tree.delete(*self.wifi_tree.get_children())
+        
+        # 插入空状态提示（使用中间列显示消息）
+        empty_values = ("", "", "", "", "", "", 
+                       message, "", "", "", "", "")
+        self.wifi_tree.insert('', 'end', values=empty_values, tags=('empty_state',))
+        
+        # 配置空状态样式
+        self.wifi_tree.tag_configure('empty_state', foreground='#999999', 
+                                     font=('Microsoft YaHei', 10))
+    
     def _scan_wifi_worker(self):
-        """WiFi扫描工作线程"""
-        # ✅ M3修复: 批量删除Treeview项，提升性能
-        self.frame.after(0, lambda: self.wifi_tree.delete(*self.wifi_tree.get_children()))
+        """✅ 优化: WiFi扫描工作线程（带空状态和错误处理）"""
+        # 显示加载状态
+        self.frame.after(0, lambda: self._show_empty_state("正在扫描WiFi网络..."))
         
         try:
             # 显示当前连接信息
@@ -824,6 +1129,18 @@ class NetworkOverviewTab:
             # 扫描周围网络
             networks = self.wifi_analyzer.scan_wifi_networks(force_refresh=True)
             self.scanned_networks = networks
+            
+            # ✅ 优化: 检查是否有网络
+            if not networks:
+                self.frame.after(0, lambda: self._show_empty_state(
+                    "未发现WiFi网络\n\n"
+                    "可能的原因：\n"
+                    "• WiFi适配器未开启\n"
+                    "• 周围无WiFi信号\n"
+                    "• 驱动程序问题\n\n"
+                    "建议：点击'扫描'按钮重试"
+                ))
+                return
             
             # 检测信道重叠
             overlapping_info = self._detect_channel_overlap(networks)
@@ -885,7 +1202,11 @@ class NetworkOverviewTab:
             self.frame.after(0, lambda: messagebox.showinfo("完成", stats_msg))
             
         except Exception as e:
-            messagebox.showerror("错误", f"扫描失败: {str(e)}")
+            # ✅ 优化: 使用友好的错误提示
+            self.frame.after(0, lambda: ErrorHandler.handle_error(e, context="WiFi扫描"))
+            self.frame.after(0, lambda: self._show_empty_state(
+                f"扫描失败\n\n{str(e)}\n\n点击'扫描'按钮重试"
+            ))
     
     def _get_signal_quality_indicator(self, signal_percent):
         """获取信号质量指示器"""
@@ -1006,16 +1327,21 @@ WiFi标准: {values[10]}
         messagebox.showinfo("成功", f"已复制BSSID: {bssid}")
     
     def _apply_band_filter(self):
-        """应用频段过滤"""
+        """✅ 优化: 应用频段过滤（使用缓存数据，无需重新扫描）"""
         band_filter = self.band_var.get()
         
-        # ✅ M3修复: 批量删除优化性能
-        self.wifi_tree.delete(*self.wifi_tree.get_children())
-        
+        # ✅ 直接过滤缓存数据，不需要重新扫描
         filtered_networks = self.scanned_networks
         if band_filter != "全部":
             filtered_networks = [net for net in self.scanned_networks 
                                if net.get('band') == band_filter]
+        
+        # ✅ 复用_update_wifi_tree方法，但不显示消息框
+        self.wifi_tree.delete(*self.wifi_tree.get_children())
+        
+        if not filtered_networks:
+            self._show_empty_state(f"无 {band_filter} 网络\n\n尝试切换到其他频段")
+            return
         
         for idx, network in enumerate(filtered_networks, 1):
             signal_percent = network.get('signal_percent', 0)
@@ -1054,7 +1380,8 @@ WiFi标准: {values[10]}
             
             self.wifi_tree.insert('', 'end', values=values, tags=tuple(tags))
         
-        messagebox.showinfo("过滤结果", f"显示 {len(filtered_networks)} 个 {band_filter} 网络")
+        # ✅ 使用状态栏而非弹窗（减少干扰）
+        print(f"[过滤] 显示 {len(filtered_networks)} 个 {band_filter} 网络")
     
     def _detect_channel_overlap(self, networks):
         """检测信道重叠"""
@@ -1076,73 +1403,26 @@ WiFi标准: {values[10]}
         
         return list(overlapping)
     
-    def _show_channel_analysis(self):
-        """显示信道利用率分析"""
+    def _jump_to_channel_analysis(self):
+        """跳转到信道分析标签页
+        
+        v2.0优化: 不再在该模块中重复实现信道分析，
+        而是直接跳转到专门的信道分析标签页。
+        """
         if not self.scanned_networks:
-            messagebox.showwarning("提示", "请先扫描WiFi网络")
+            messagebox.showwarning("提示", "请先扫描WiFi网络，然后切换到信道分析标签页查看详细分析")
             return
         
-        channel_util_24 = {ch: 0 for ch in range(1, 14)}
-        channel_util_5 = {}
-        
-        for net in self.scanned_networks:
-            try:
-                channel = int(net.get('channel', 0))
-                signal_percent = net.get('signal_percent', 0)
-                if isinstance(signal_percent, str):
-                    signal_percent = int(signal_percent.rstrip('%'))
-                
-                band = net.get('band', 'N/A')
-                
-                if band == '2.4GHz' and 1 <= channel <= 13:
-                    channel_util_24[channel] += signal_percent
-                    for offset in [-2, -1, 1, 2]:
-                        neighbor = channel + offset
-                        if 1 <= neighbor <= 13:
-                            channel_util_24[neighbor] += signal_percent * 0.3
-                
-                elif band == '5GHz':
-                    if channel not in channel_util_5:
-                        channel_util_5[channel] = 0
-                    channel_util_5[channel] += signal_percent
-            
-            except (ValueError, KeyError):
-                print('[警告] 操作失败但已忽略')  # P2修复: 添加日志
-        
-        best_channel_24 = min(channel_util_24, key=channel_util_24.get) if channel_util_24 else None
-        best_channel_5 = min(channel_util_5, key=channel_util_5.get) if channel_util_5 else None
-        
-        analysis_window = tk.Toplevel(self.frame)
-        analysis_window.title("信道利用率分析")
-        analysis_window.geometry("800x600")
-        
-        result_text = scrolledtext.ScrolledText(analysis_window, font=('Consolas', 10))
-        result_text.pack(fill='both', expand=True, padx=10, pady=10)
-        
-        result_text.insert('end', "=" * 60 + "\n")
-        result_text.insert('end', "信道利用率分析报告\n")
-        result_text.insert('end', "=" * 60 + "\n\n")
-        
-        result_text.insert('end', "【2.4GHz频段】\n")
-        for ch in sorted(channel_util_24.keys()):
-            util = channel_util_24[ch]
-            bar = '█' * int(util / 10)
-            marker = " ← 推荐" if ch == best_channel_24 else ""
-            result_text.insert('end', f"信道 {ch:2d}: {bar} {util:.1f}%{marker}\n")
-        
-        result_text.insert('end', f"\n✅ 推荐2.4GHz信道: {best_channel_24}\n\n")
-        
-        if channel_util_5:
-            result_text.insert('end', "【5GHz频段】\n")
-            for ch in sorted(channel_util_5.keys()):
-                util = channel_util_5[ch]
-                bar = '█' * int(util / 10)
-                marker = " ← 推荐" if ch == best_channel_5 else ""
-                result_text.insert('end', f"信道 {ch:3d}: {bar} {util:.1f}%{marker}\n")
-            
-            result_text.insert('end', f"\n✅ 推荐5GHz信道: {best_channel_5}\n")
-        
-        result_text.config(state='disabled')
+        # 跳转到信道分析标签页 (第2个标签，索引1)
+        try:
+            self.notebook.select(1)  # 0=网络概览, 1=信道分析
+            messagebox.showinfo("提示", "已切换到信道分析标签页，请点击'分析'按钮查看详细报告")
+        except Exception as e:
+            messagebox.showerror("错误", f"跳转失败: {str(e)}")
+    
+    # ❌ v2.0: _show_channel_analysis()方法已删除，使用上面的_jump_to_channel_analysis()替代
+    # 原始方法在network_overview中重复实现了信道分析（~70行），
+    # 现在统一使用channel_analysis.py模块。
     
     def _show_history_chart(self):
         """显示历史趋势图"""

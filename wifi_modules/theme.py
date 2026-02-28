@@ -7,7 +7,7 @@ import tkinter as tk
 from tkinter import ttk
 
 class ModernTheme:
-    """现代化主题配色方案 - 增强版"""
+    """现代化主题配色方案 - 企业增强版"""
     
     LIGHT = {
         'bg': '#f8f9fa',           # 更柔和的背景色
@@ -51,18 +51,157 @@ class ModernTheme:
         'gradient_end': '#764ba2'   # 渐变结束
     }
     
+    # 🏢 企业商务蓝主题 - 专业、稳重、信赖
+    ENTERPRISE_BLUE = {
+        'bg': '#f5f7fa',           # 浅灰蓝背景
+        'fg': '#1e3a5f',           # 深蓝文字
+        'primary': '#0066cc',      # IBM蓝/企业蓝
+        'primary_dark': '#004a99', # 深企业蓝
+        'secondary': '#6c7a89',    # 商务灰
+        'success': '#00a86b',      # 商务绿
+        'warning': '#ff8c00',      # 商务橙
+        'danger': '#cc0000',       # 商务红
+        'info': '#0099cc',         # 信息蓝
+        'card_bg': '#ffffff',      # 纯白卡片
+        'card_shadow': '#d1d9e6',  # 蓝灰阴影
+        'border': '#c5d0de',       # 蓝灰边框
+        'hover': '#e8eef5',        # 浅蓝悬停
+        'input_bg': '#ffffff',     # 白色输入框
+        'input_border': '#b8c5d6', # 蓝灰边框
+        'text_muted': '#5a6c7d',   # 灰蓝文字
+        'gradient_start': '#0066cc',# 企业蓝渐变
+        'gradient_end': '#003d7a'   # 深蓝渐变
+    }
+    
+    # 🏢 企业专业灰主题 - 简约、高端、专注
+    ENTERPRISE_GRAY = {
+        'bg': '#f4f5f7',           # 浅灰背景
+        'fg': '#2d3436',           # 深灰文字
+        'primary': '#555555',      # 中性灰
+        'primary_dark': '#333333', # 深灰
+        'secondary': '#74788d',    # 蓝灰
+        'success': '#28a745',      # 绿色
+        'warning': '#fd7e14',      # 橙色
+        'danger': '#dc3545',       # 红色
+        'info': '#17a2b8',         # 青色
+        'card_bg': '#ffffff',      # 纯白卡片
+        'card_shadow': '#dfe3e8',  # 灰色阴影
+        'border': '#d4d9df',       # 浅灰边框
+        'hover': '#e9ecef',        # 浅灰悬停
+        'input_bg': '#ffffff',     # 白色输入框
+        'input_border': '#ced4da', # 灰色边框
+        'text_muted': '#6c757d',   # 次要灰色
+        'gradient_start': '#555555',# 灰色渐变
+        'gradient_end': '#2d3436'   # 深灰渐变
+    }
+    
+    # 🏢 企业科技黑主题 - 现代、科技、专业
+    ENTERPRISE_TECH = {
+        'bg': '#0d1117',           # 深黑背景
+        'fg': '#c9d1d9',           # 浅灰文字
+        'primary': '#00d4ff',      # 科技蓝
+        'primary_dark': '#00a8cc', # 深科技蓝
+        'secondary': '#8b949e',    # 灰色
+        'success': '#00ff9f',      # 荧光绿
+        'warning': '#ffcc00',      # 警示黄
+        'danger': '#ff3366',       # 荧光红
+        'info': '#58a6ff',         # 亮蓝
+        'card_bg': '#161b22',      # 深灰卡片
+        'card_shadow': '#010409',  # 纯黑阴影
+        'border': '#30363d',       # 深灰边框
+        'hover': '#21262d',        # 悬停深灰
+        'input_bg': '#0d1117',     # 黑色输入框
+        'input_border': '#30363d', # 深灰边框
+        'text_muted': '#8b949e',   # 次要灰色
+        'gradient_start': '#00d4ff',# 科技蓝渐变
+        'gradient_end': '#0066ff'   # 蓝色渐变
+    }
+    
+    # 🏢 企业金融主题 - 稳健、权威、高端
+    ENTERPRISE_FINANCE = {
+        'bg': '#fafbfc',           # 极浅灰背景
+        'fg': '#24292e',           # 近黑文字
+        'primary': '#1a5490',      # 深蓝（金融色）
+        'primary_dark': '#0e3a66', # 深海军蓝
+        'secondary': '#586069',    # 深灰
+        'success': '#1e7e34',      # 深绿（稳健）
+        'warning': '#c67a00',      # 金色
+        'danger': '#b31d28',       # 深红
+        'info': '#0969da',         # 金融蓝
+        'card_bg': '#ffffff',      # 纯白卡片
+        'card_shadow': '#e1e4e8',  # 浅灰阴影
+        'border': '#d0d7de',       # 边框灰
+        'hover': '#f3f4f6',        # 极浅灰悬停
+        'input_bg': '#ffffff',     # 白色输入框
+        'input_border': '#d0d7de', # 灰色边框
+        'text_muted': '#57606a',   # 次要文字
+        'gradient_start': '#1a5490',# 金融蓝渐变
+        'gradient_end': '#0e3a66'   # 深蓝渐变
+    }
+    
+    # 🏢 企业医疗主题 - 清洁、可靠、专业
+    ENTERPRISE_MEDICAL = {
+        'bg': '#f8f9fc',           # 医疗白背景
+        'fg': '#1f2937',           # 深灰文字
+        'primary': '#0284c7',      # 医疗蓝
+        'primary_dark': '#075985', # 深医疗蓝
+        'secondary': '#64748b',    # 中性灰
+        'success': '#059669',      # 医疗绿
+        'warning': '#ea580c',      # 医疗橙
+        'danger': '#dc2626',       # 医疗红
+        'info': '#0ea5e9',         # 信息蓝
+        'card_bg': '#ffffff',      # 纯白卡片
+        'card_shadow': '#e5e7eb',  # 浅灰阴影
+        'border': '#d1d5db',       # 灰色边框
+        'hover': '#f0f4f8',        # 浅蓝悬停
+        'input_bg': '#ffffff',     # 白色输入框
+        'input_border': '#cbd5e1', # 灰蓝边框
+        'text_muted': '#6b7280',   # 次要文字
+        'gradient_start': '#0284c7',# 医疗蓝渐变
+        'gradient_end': '#0369a1'   # 深医疗蓝渐变
+    }
+    
+    # 主题名称映射
+    THEME_NAMES = {
+        'light': '浅色经典',
+        'dark': '深色经典',
+        'enterprise_blue': '🏢 商务蓝',
+        'enterprise_gray': '🏢 专业灰',
+        'enterprise_tech': '🏢 科技黑',
+        'enterprise_finance': '🏢 金融版',
+        'enterprise_medical': '🏢 医疗版'
+    }
+    
     @classmethod
     def get_theme(cls, theme_name='light'):
         """获取主题配色"""
-        return cls.DARK if theme_name.lower() == 'dark' else cls.LIGHT
+        theme_map = {
+            'dark': cls.DARK,
+            'enterprise_blue': cls.ENTERPRISE_BLUE,
+            'enterprise_gray': cls.ENTERPRISE_GRAY,
+            'enterprise_tech': cls.ENTERPRISE_TECH,
+            'enterprise_finance': cls.ENTERPRISE_FINANCE,
+            'enterprise_medical': cls.ENTERPRISE_MEDICAL
+        }
+        return theme_map.get(theme_name.lower(), cls.LIGHT)
+    
+    @classmethod
+    def get_all_themes(cls):
+        """获取所有可用主题列表"""
+        return list(cls.THEME_NAMES.keys())
+    
+    @classmethod
+    def get_theme_display_name(cls, theme_name):
+        """获取主题显示名称"""
+        return cls.THEME_NAMES.get(theme_name, theme_name)
 
 
 class ModernButton(tk.Button):
-    """现代化按钮组件 - 增强版"""
+    """现代化按钮组件 - 增强版（支持主题切换）"""
     
-    def __init__(self, master, text="", command=None, style='primary', **kwargs):
+    def __init__(self, master, text="", command=None, style='primary', theme_name='light', **kwargs):
         # 获取主题色
-        theme = ModernTheme.LIGHT
+        theme = ModernTheme.get_theme(theme_name)
         
         # 根据样式设置颜色
         style_colors = {
@@ -150,10 +289,10 @@ class ModernButton(tk.Button):
 
 
 class ModernCard(tk.Frame):
-    """现代化卡片组件 - 带阴影效果"""
+    """现代化卡片组件 - 带阴影效果（支持主题切换）"""
     
-    def __init__(self, master, title="", **kwargs):
-        theme = ModernTheme.LIGHT
+    def __init__(self, master, title="", theme_name='light', **kwargs):
+        theme = ModernTheme.get_theme(theme_name)
         
         # 外层容器（用于阴影效果）
         shadow_config = {
@@ -207,10 +346,10 @@ class ModernProgressBar(ttk.Progressbar):
 
 
 class StatusBadge(tk.Label):
-    """状态徽章组件"""
+    """状态徽章组件（支持主题切换）"""
     
-    def __init__(self, master, text="", status='info', **kwargs):
-        theme = ModernTheme.LIGHT
+    def __init__(self, master, text="", status='info', theme_name='light', **kwargs):
+        theme = ModernTheme.get_theme(theme_name)
         
         # 状态颜色映射
         status_colors = {
@@ -298,9 +437,9 @@ class ModernTooltip:
             self.tooltip_window = None
 
 
-def create_section_title(parent, text, icon=""):
-    """创建章节标题"""
-    theme = ModernTheme.LIGHT
+def create_section_title(parent, text, icon="", theme_name='light'):
+    """创建章节标题（支持主题切换）"""
+    theme = ModernTheme.get_theme(theme_name)
     
     frame = tk.Frame(parent, bg=theme['bg'])
     frame.pack(fill='x', pady=(15, 10))
@@ -318,9 +457,9 @@ def create_section_title(parent, text, icon=""):
     return frame
 
 
-def create_info_label(parent, label_text, value_text="", icon=""):
-    """创建信息标签"""
-    theme = ModernTheme.LIGHT
+def create_info_label(parent, label_text, value_text="", icon="", theme_name='light'):
+    """创建信息标签（支持主题切换）"""
+    theme = ModernTheme.get_theme(theme_name)
     
     frame = tk.Frame(parent, bg=theme['card_bg'])
     
@@ -343,9 +482,9 @@ def create_info_label(parent, label_text, value_text="", icon=""):
     return frame
 
 
-def apply_modern_style(root):
-    """应用现代化样式到整个应用"""
-    theme = ModernTheme.LIGHT
+def apply_modern_style(root, theme_name='light'):
+    """应用现代化样式到整个应用（支持主题切换）"""
+    theme = ModernTheme.get_theme(theme_name)
     style = ttk.Style()
     
     # 使用clam主题作为基础

@@ -4,16 +4,20 @@
 """
 WiFi 6/6E 高级分析器
 支持OFDMA、BSS Color、TWT、MU-MIMO等WiFi 6特性分析
+v2.0: 使用统一WiFi扫描接口
 """
 
 import re
-import subprocess
 import platform
 import json
 from dataclasses import dataclass, field
 from typing import List, Dict, Optional, Tuple
 from datetime import datetime
 from enum import Enum
+
+# 导入核心WiFi分析器和工具函数
+from core.wifi_analyzer import WiFiAnalyzer
+from core.utils import channel_to_frequency, frequency_to_channel, percent_to_dbm
 
 # Windows下隐藏cmd窗口
 if platform.system().lower() == "windows":
@@ -203,258 +207,117 @@ class WiFi6Analyzer:
         self.wifi6_networks: List[WiFi6NetworkInfo] = []
         self.bss_color_map: Dict[int, List[str]] = {}  # color_id -> [bssid1, bssid2, ...]
         
+        # ✅ v2.0: 使用统一WiFi扫描接口
+        self.wifi_analyzer = WiFiAnalyzer()
+        
     def scan_wifi6_networks(self) -> List[WiFi6NetworkInfo]:
-        """扫描WiFi 6/6E网络"""
-        networks = []
+        """扫描WiFi 6/6E网络 - v2.0: 使用统一扫描接口"""
+        # ✅ 使用核心扫描API获取所有网络
+        all_networks = self.wifi_analyzer.scan_wifi_networks(force_refresh=True)
         
-        if self.system == "windows":
-            networks = self._scan_windows()
-        elif self.system == "linux":
-            networks = self._scan_linux()
-        elif self.system == "darwin":
-            networks = self._scan_macos()
+        # 转换为WiFi6NetworkInfo格式
+        wifi6_networks = []
+        for net in all_networks:
+            # 识别WiFi标准
+            standard = self._identify_wifi6_standard(net)
+            
+            # 只处理WiFi 6/6E网络（也可保留WiFi 5/4用于对比）
+            wifi6_info = WiFi6NetworkInfo(
+                ssid=net.get('ssid', ''),
+                bssid=net.get('bssid', ''),
+                channel=net.get('channel', 0),
+                frequency=channel_to_frequency(net.get('channel', 0)),
+                bandwidth=self._estimate_bandwidth(net),
+                standard=standard,
+                signal_strength=net.get('signal_dbm', -100)
+            )
+            
+            # 分析WiFi 6特性（仅对WiFi 6/6E网络）
+            if standard in [WiFi6Standard.WIFI6_AX, WiFi6Standard.WIFI6E_AX]:
+                self._analyze_wifi6_features(wifi6_info)
+            
+            wifi6_networks.append(wifi6_info)
         
-        self.wifi6_networks = networks
+        self.wifi6_networks = wifi6_networks
         self._analyze_bss_color_conflicts()
         
-        return networks
+        return wifi6_networks
     
-    def _scan_windows(self) -> List[WiFi6NetworkInfo]:
-        """Windows系统扫描WiFi 6网络"""
-        networks = []
+    def _identify_wifi6_standard(self, network: Dict) -> WiFi6Standard:
+        """识别WiFi标准"""
+        wifi_standard = network.get('wifi_standard', 'N/A')
+        channel = network.get('channel', 0)
         
+        # 确保channel是整数类型
         try:
-            # 执行netsh命令获取详细信息
-            cmd = "netsh wlan show networks mode=bssid"
-            result = subprocess.run(
-                cmd, 
-                shell=True, 
-                capture_output=True, 
-                text=True, 
-                encoding='gbk',
-                creationflags=CREATE_NO_WINDOW,
-                timeout=10
-            )
-            
-            if result.returncode != 0:
-                return networks
-            
-            # 解析网络信息
-            current_network = None
-            lines = result.stdout.split('\n')
-            
-            for line in lines:
-                line = line.strip()
-                
-                # SSID
-                if line.startswith('SSID'):
-                    match = re.search(r'SSID\s+\d+\s*:\s*(.+)', line)
-                    if match and current_network:
-                        networks.append(current_network)
-                    
-                    if match:
-                        ssid = match.group(1).strip()
-                        current_network = WiFi6NetworkInfo(
-                            ssid=ssid,
-                            bssid="",
-                            channel=0,
-                            frequency=0,
-                            bandwidth=0,
-                            standard=WiFi6Standard.LEGACY,
-                            signal_strength=0
-                        )
-                
-                if not current_network:
-                    continue
-                
-                # BSSID
-                if line.startswith('BSSID'):
-                    match = re.search(r'BSSID\s+\d+\s*:\s*([0-9a-fA-F:]+)', line)
-                    if match:
-                        current_network.bssid = match.group(1).upper()
-                
-                # 信号强度
-                if '信号' in line or 'Signal' in line:
-                    match = re.search(r'(\d+)%', line)
-                    if match:
-                        # 将百分比转换为dBm (近似)
-                        percent = int(match.group(1))
-                        current_network.signal_strength = self._percent_to_dbm(percent)
-                
-                # 无线电类型
-                if '无线电类型' in line or 'Radio type' in line:
-                    if '802.11ax' in line:
-                        current_network.standard = WiFi6Standard.WIFI6_AX
-                    elif '802.11ac' in line:
-                        current_network.standard = WiFi6Standard.WIFI5_AC
-                    elif '802.11n' in line:
-                        current_network.standard = WiFi6Standard.WIFI4_N
-                
-                # 信道
-                if '信道' in line or 'Channel' in line:
-                    match = re.search(r'(\d+)', line)
-                    if match:
-                        current_network.channel = int(match.group(1))
-                        current_network.frequency = self._channel_to_frequency(current_network.channel)
-            
-            # 添加最后一个网络
-            if current_network:
-                networks.append(current_network)
-            
-            # 分析WiFi 6特性
-            for network in networks:
-                if network.standard in [WiFi6Standard.WIFI6_AX, WiFi6Standard.WIFI6E_AX]:
-                    self._analyze_wifi6_features(network)
+            channel = int(channel)
+        except (ValueError, TypeError):
+            channel = 0
         
-        except Exception as e:
-            print(f"扫描WiFi 6网络时出错: {e}")
+        # WiFi 6E: 6GHz频段 (信道1-233)
+        if channel >= 1 and channel <= 233 and channel not in range(1, 15) and channel not in range(36, 166):
+            return WiFi6Standard.WIFI6E_AX
         
-        return networks
+        # 根据协议标识
+        if '802.11ax' in wifi_standard or 'WiFi 6' in wifi_standard:
+            if channel >= 1 and channel <= 233 and channel not in range(1, 15) and channel not in range(36, 166):
+                return WiFi6Standard.WIFI6E_AX
+            return WiFi6Standard.WIFI6_AX
+        elif '802.11ac' in wifi_standard or 'WiFi 5' in wifi_standard:
+            return WiFi6Standard.WIFI5_AC
+        elif '802.11n' in wifi_standard or 'WiFi 4' in wifi_standard:
+            return WiFi6Standard.WIFI4_N
+        else:
+            return WiFi6Standard.LEGACY
     
-    def _scan_linux(self) -> List[WiFi6NetworkInfo]:
-        """Linux系统扫描WiFi 6网络"""
-        networks = []
-        
-        try:
-            # 使用iw命令扫描
-            cmd = "sudo iw dev wlan0 scan"
-            result = subprocess.run(
-                cmd.split(),
-                capture_output=True,
-                text=True,
-                timeout=10
-            )
-            
-            if result.returncode != 0:
-                return networks
-            
-            # 解析输出
-            current_network = None
-            for line in result.stdout.split('\n'):
-                line = line.strip()
-                
-                # BSS (BSSID)
-                if line.startswith('BSS'):
-                    if current_network:
-                        networks.append(current_network)
-                    
-                    match = re.search(r'BSS ([0-9a-fA-F:]+)', line)
+    def _estimate_bandwidth(self, network: Dict) -> int:
+        """估算带宽"""
+        bandwidth = network.get('bandwidth', 0)
+        if bandwidth:
+            try:
+                # 如果是字符串，尝试提取数字
+                if isinstance(bandwidth, str):
+                    match = re.search(r'(\d+)', bandwidth)
                     if match:
-                        current_network = WiFi6NetworkInfo(
-                            ssid="",
-                            bssid=match.group(1).upper(),
-                            channel=0,
-                            frequency=0,
-                            bandwidth=0,
-                            standard=WiFi6Standard.LEGACY,
-                            signal_strength=0
-                        )
-                
-                if not current_network:
-                    continue
-                
-                # SSID
-                if line.startswith('SSID:'):
-                    current_network.ssid = line.split(':', 1)[1].strip()
-                
-                # 频率
-                if 'freq:' in line.lower():
-                    match = re.search(r'(\d+)', line)
-                    if match:
-                        current_network.frequency = int(match.group(1))
-                        current_network.channel = self._frequency_to_channel(current_network.frequency)
-                
-                # 信号强度
-                if 'signal:' in line.lower():
-                    match = re.search(r'(-?\d+\.?\d*)\s*dBm', line)
-                    if match:
-                        current_network.signal_strength = int(float(match.group(1)))
-                
-                # HE (WiFi 6)
-                if 'HE capabilities' in line or 'HE Operation' in line:
-                    current_network.standard = WiFi6Standard.WIFI6_AX
-                    if current_network.frequency >= 5925:
-                        current_network.standard = WiFi6Standard.WIFI6E_AX
-            
-            if current_network:
-                networks.append(current_network)
-            
-            # 分析WiFi 6特性
-            for network in networks:
-                if network.standard in [WiFi6Standard.WIFI6_AX, WiFi6Standard.WIFI6E_AX]:
-                    self._analyze_wifi6_features(network)
+                        return int(match.group(1))
+                return int(bandwidth)
+            except:
+                pass
         
-        except Exception as e:
-            print(f"Linux扫描WiFi 6网络时出错: {e}")
+        # 根据频段和标准估算
+        channel = network.get('channel', 0)
+        wifi_standard = network.get('wifi_standard', '')
         
-        return networks
+        # WiFi 6 默认至少80MHz
+        if '802.11ax' in wifi_standard:
+            if channel >= 36:  # 5GHz/6GHz
+                return 80
+            else:  # 2.4GHz
+                return 40
+        # WiFi 5 默认80MHz
+        elif '802.11ac' in wifi_standard:
+            return 80
+        # WiFi 4 默认40MHz
+        elif '802.11n' in wifi_standard:
+            return 40
+        
+        return 20  # 默认20MHz
     
-    def _scan_macos(self) -> List[WiFi6NetworkInfo]:
-        """macOS系统扫描WiFi 6网络"""
-        networks = []
+    # ❌ v2.0: 频率/信道转换方法已迁移到core.utils
+    # 使用: from core.utils import channel_to_frequency, frequency_to_channel
+    
+    # ❌ v2.0: 删除平台特定的扫描方法，已由统一接口替代
+    # _scan_windows(), _scan_linux(), _scan_macos() 方法已移除
+    
+    def _analyze_wifi6_features_old(self) -> None:
+        """❌ 旧版：通过平台特定命令分析WiFi 6特性（已废弃）
         
-        try:
-            # 使用airport命令
-            cmd = "/System/Library/PrivateFrameworks/Apple80211.framework/Versions/Current/Resources/airport -s"
-            result = subprocess.run(
-                cmd.split(),
-                capture_output=True,
-                text=True,
-                timeout=10
-            )
-            
-            if result.returncode != 0:
-                return networks
-            
-            lines = result.stdout.split('\n')[1:]  # 跳过标题行
-            
-            for line in lines:
-                if not line.strip():
-                    continue
-                
-                parts = line.split()
-                if len(parts) < 7:
-                    continue
-                
-                ssid = parts[0]
-                bssid = parts[1]
-                rssi = int(parts[2])
-                channel_str = parts[3]
-                
-                # 解析信道和带宽
-                channel_match = re.search(r'(\d+)', channel_str)
-                channel = int(channel_match.group(1)) if channel_match else 0
-                
-                # 检测WiFi 6
-                standard = WiFi6Standard.LEGACY
-                if 'ax' in line.lower() or '802.11ax' in line:
-                    standard = WiFi6Standard.WIFI6_AX
-                elif 'ac' in line.lower():
-                    standard = WiFi6Standard.WIFI5_AC
-                elif 'n' in line.lower():
-                    standard = WiFi6Standard.WIFI4_N
-                
-                network = WiFi6NetworkInfo(
-                    ssid=ssid,
-                    bssid=bssid,
-                    channel=channel,
-                    frequency=self._channel_to_frequency(channel),
-                    bandwidth=0,
-                    standard=standard,
-                    signal_strength=rssi
-                )
-                
-                networks.append(network)
-            
-            # 分析WiFi 6特性
-            for network in networks:
-                if network.standard in [WiFi6Standard.WIFI6_AX, WiFi6Standard.WIFI6E_AX]:
-                    self._analyze_wifi6_features(network)
-        
-        except Exception as e:
-            print(f"macOS扫描WiFi 6网络时出错: {e}")
-        
-        return networks
+        v2.0注释：
+        原_scan_windows(), _scan_linux(), _scan_macos()方法（约200行）已被删除。
+        现在使用core.wifi_analyzer.WiFiAnalyzer().scan_wifi_networks()统一接口，
+        大幅简化代码并提高跨平台兼容性。
+        """
+        pass
     
     def _analyze_wifi6_features(self, network: WiFi6NetworkInfo):
         """分析WiFi 6特性"""
@@ -743,46 +606,12 @@ class WiFi6Analyzer:
             'average_score': avg_score,
             'scan_time': datetime.now().isoformat()
         }
-    
-    @staticmethod
-    def _percent_to_dbm(percent: int) -> int:
-        """将信号百分比转换为dBm"""
-        if percent >= 80:
-            return -30 - (100 - percent) * 2
-        elif percent >= 60:
-            return -50 - (80 - percent) * 1
-        elif percent >= 40:
-            return -60 - (60 - percent) * 1
-        elif percent >= 20:
-            return -70 - (40 - percent) * 1
-        else:
-            return -80 - (20 - percent) * 1
-    
-    @staticmethod
-    def _channel_to_frequency(channel: int) -> int:
-        """信道转频率 (MHz)"""
-        if 1 <= channel <= 13:  # 2.4GHz
-            return 2412 + (channel - 1) * 5
-        elif channel == 14:
-            return 2484
-        elif 32 <= channel <= 173:  # 5GHz
-            return 5160 + (channel - 32) * 5
-        elif 1 <= channel <= 233:  # 6GHz (WiFi 6E)
-            return 5955 + channel * 5
-        return 0
-    
-    @staticmethod
-    def _frequency_to_channel(frequency: int) -> int:
-        """频率转信道"""
-        if 2412 <= frequency <= 2472:
-            return (frequency - 2412) // 5 + 1
-        elif frequency == 2484:
-            return 14
-        elif 5160 <= frequency <= 5865:
-            return (frequency - 5160) // 5 + 32
-        elif 5955 <= frequency <= 7115:  # 6GHz
-            return (frequency - 5955) // 5
-        return 0
+
+
+# ❌ v2.0: 以下静态方法已废弃，已迁移到core.utils模块
+# 请使用:
+#   from core.utils import percent_to_dbm, channel_to_frequency, frequency_to_channel
+# 这些函数现在是全局工具函数，无需通过类调用
 
 
 # 测试代码

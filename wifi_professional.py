@@ -2,8 +2,8 @@
 # -*- coding: utf-8 -*-
 """
 WiFi专业分析工具 - 模块化版本
-功能：WiFi网络扫描、信号分析、热力图生成、性能评估、信号罗盘测向、企业级报告生成、PCI-DSS安全评估、WiFi 6/6E高级分析
-版本：1.6.2
+功能：WiFi网络扫描、信号分析、热力图生成、性能评估、信号罗盘测向、企业级报告生成、PCI-DSS安全评估、智能干扰源定位
+版本：1.6.3
 开发者：NL@China_SZ
 """
 
@@ -24,7 +24,7 @@ from wifi_modules.icon_system import PROFESSIONAL_ICONS, TAB_CONFIG
 from core.admin_utils import is_admin, get_admin_status_text, check_admin_rights
 
 # 版本信息
-VERSION = "1.6.2"
+VERSION = "1.6.3"
 DEVELOPER = "NL@China_SZ"
 APP_TITLE = "WiFi专业分析工具"
 
@@ -44,10 +44,11 @@ from wifi_modules import (
 )
 from wifi_modules.performance_window import PerformanceBenchmarkWindow
 from wifi_modules.enterprise_report_tab import EnterpriseReportTab
-from wifi_modules.wifi6_analyzer_tab import WiFi6AnalyzerTab
+from wifi_modules.interference_locator_tab import InterferenceLocatorTab
 
 # ✅ P2-3: 导入内存监控模块
 from core.memory_monitor import get_memory_monitor
+import json
 
 
 class WiFiProfessionalApp:
@@ -71,17 +72,22 @@ class WiFiProfessionalApp:
                 # 开发模式从脚本目录加载
                 base_path = os.path.dirname(__file__)
             
-            icon_path = os.path.join(base_path, 'wifi_professional.ico')
+            icon_path = os.path.join(base_path, 'wifi_icon.ico')
             if os.path.exists(icon_path):
                 self.root.iconbitmap(icon_path)
+            else:
+                # 兼容旧文件名
+                old_icon_path = os.path.join(base_path, 'wifi_professional.ico')
+                if os.path.exists(old_icon_path):
+                    self.root.iconbitmap(old_icon_path)
         except Exception as e:
             logging.warning(f"无法加载窗口图标: {e}")
         
         # 初始化WiFi分析器
         self.wifi_analyzer = WiFiAnalyzer()
         
-        # 当前主题
-        self.current_theme = 'light'
+        # 加载主题设置（从配置文件）
+        self.current_theme = self._load_theme_config()
         
         # 用于记录所有标签页引用（便于清理）
         self.tabs = {}
@@ -110,7 +116,27 @@ class WiFiProfessionalApp:
         menubar.add_cascade(label='工具', menu=tools_menu)
         tools_menu.add_command(label='⚡ WiFi性能测试', command=self._open_performance_test)
         tools_menu.add_separator()
-        tools_menu.add_command(label='切换主题', command=self._toggle_theme)
+        
+        # 主题子菜单
+        theme_menu = tk.Menu(tools_menu, tearoff=0)
+        tools_menu.add_cascade(label='🎨 主题选择', menu=theme_menu)
+        
+        # 添加所有主题选项
+        theme_menu.add_command(label='✓ 浅色经典' if self.current_theme == 'light' else '   浅色经典', 
+                              command=lambda: self._switch_theme('light'))
+        theme_menu.add_command(label='✓ 深色经典' if self.current_theme == 'dark' else '   深色经典', 
+                              command=lambda: self._switch_theme('dark'))
+        theme_menu.add_separator()
+        theme_menu.add_command(label='✓ 🏢 商务蓝' if self.current_theme == 'enterprise_blue' else '   🏢 商务蓝', 
+                              command=lambda: self._switch_theme('enterprise_blue'))
+        theme_menu.add_command(label='✓ 🏢 专业灰' if self.current_theme == 'enterprise_gray' else '   🏢 专业灰', 
+                              command=lambda: self._switch_theme('enterprise_gray'))
+        theme_menu.add_command(label='✓ 🏢 科技黑' if self.current_theme == 'enterprise_tech' else '   🏢 科技黑', 
+                              command=lambda: self._switch_theme('enterprise_tech'))
+        theme_menu.add_command(label='✓ 🏢 金融版' if self.current_theme == 'enterprise_finance' else '   🏢 金融版', 
+                              command=lambda: self._switch_theme('enterprise_finance'))
+        theme_menu.add_command(label='✓ 🏢 医疗版' if self.current_theme == 'enterprise_medical' else '   🏢 医疗版', 
+                              command=lambda: self._switch_theme('enterprise_medical'))
         
         # 帮助菜单
         help_menu = tk.Menu(menubar, tearoff=0)
@@ -163,9 +189,9 @@ class WiFiProfessionalApp:
         self.notebook.add(self.tabs['enterprise'].get_frame(), 
                          text="📊 企业级报告")
         
-        # Tab 8: WiFi 6/6E分析 (新增 v1.6.2)
-        self.tabs['wifi6'] = WiFi6AnalyzerTab(self.notebook)
-        # 标签页已在WiFi6AnalyzerTab内部添加
+        # Tab 8: 智能干扰定位 (新增 v1.6.3)
+        self.tabs['interference'] = InterferenceLocatorTab(self.notebook)
+        # 标签页已在InterferenceLocatorTab内部添加
         
         # 底部状态栏
         statusbar = ttk.Frame(self.root)
@@ -201,7 +227,7 @@ class WiFiProfessionalApp:
         theme = ModernTheme.get_theme(self.current_theme)
         
         # 应用现代化样式
-        apply_modern_style(self.root)
+        apply_modern_style(self.root, self.current_theme)
         
         # 应用到根窗口
         self.root.configure(bg=theme['bg'])
@@ -213,12 +239,67 @@ class WiFiProfessionalApp:
         except Exception as e:
             messagebox.showerror("错误", f"打开性能测试失败: {str(e)}")
     
-    def _toggle_theme(self):
-        """切换主题"""
-        self.current_theme = 'dark' if self.current_theme == 'light' else 'light'
+    def _switch_theme(self, theme_name):
+        """切换到指定主题"""
+        self.current_theme = theme_name
         self._apply_theme()
-        theme_name = '暗色' if self.current_theme == 'dark' else '亮色'
-        messagebox.showinfo("主题", f"已切换到{theme_name}主题")
+        
+        # 保存主题设置到配置文件
+        self._save_theme_config(theme_name)
+        
+        # 获取主题显示名称
+        display_name = ModernTheme.get_theme_display_name(theme_name)
+        
+        messagebox.showinfo("主题切换", 
+                          f"已切换到 {display_name} 主题\n\n"
+                          f"提示: 部分标签页需要重新打开才能完全应用新主题")
+    
+    def _toggle_theme(self):
+        """快速切换主题（保留旧接口兼容性）"""
+        themes = ModernTheme.get_all_themes()
+        current_index = themes.index(self.current_theme) if self.current_theme in themes else 0
+        next_index = (current_index + 1) % len(themes)
+        self._switch_theme(themes[next_index])
+    
+    def _load_theme_config(self):
+        """从配置文件加载主题设置"""
+        try:
+            config_path = 'config.json'
+            if os.path.exists(config_path):
+                with open(config_path, 'r', encoding='utf-8') as f:
+                    config = json.load(f)
+                    theme = config.get('theme', 'enterprise_blue')
+                    # 验证主题是否有效
+                    if theme in ModernTheme.get_all_themes():
+                        logging.info(f"✅ 已加载主题配置: {theme}")
+                        return theme
+        except Exception as e:
+            logging.warning(f"加载主题配置失败: {e}")
+        
+        # 默认使用企业商务蓝主题
+        return 'enterprise_blue'
+    
+    def _save_theme_config(self, theme_name):
+        """保存主题设置到配置文件"""
+        try:
+            config_path = 'config.json'
+            config = {}
+            
+            # 读取现有配置
+            if os.path.exists(config_path):
+                with open(config_path, 'r', encoding='utf-8') as f:
+                    config = json.load(f)
+            
+            # 更新主题设置
+            config['theme'] = theme_name
+            
+            # 保存配置
+            with open(config_path, 'w', encoding='utf-8') as f:
+                json.dump(config, f, indent=2, ensure_ascii=False)
+            
+            logging.info(f"✅ 主题配置已保存: {theme_name}")
+        except Exception as e:
+            logging.warning(f"保存主题配置失败: {e}")
     
     def _show_about(self):
         """显示关于对话框"""
@@ -235,7 +316,7 @@ class WiFiProfessionalApp:
 • 部署优化 - AP位置规划与覆盖分析
 • 安全检测 - WEP/WPA/加密方式检测
 • 企业级报告 - PDF/Excel专业分析报告
-• WiFi 6/6E分析 - OFDMA/BSS颜色/TWT/MU-MIMO (v1.6.2新增)
+• 智能干扰定位 - RSSI三角定位/干扰源识别 (v1.6.3新增)
 
 Copyright © 2026 {DEVELOPER}
 保留所有权利

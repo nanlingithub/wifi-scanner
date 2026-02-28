@@ -1,0 +1,182 @@
+name: WiFi Professional - Automated Testing
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+  schedule:
+    # 每天UTC时间00:00运行（北京时间08:00）
+    - cron: '0 0 * * *'
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: Test on ${{ matrix.os }} - Python ${{ matrix.python-version }}
+    runs-on: ${{ matrix.os }}
+    
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest, macos-latest]
+        python-version: ['3.9', '3.10', '3.11', '3.12']
+    
+    steps:
+    - name: 📥 Checkout代码
+      uses: actions/checkout@v4
+    
+    - name: 🐍 设置Python ${{ matrix.python-version }}
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ matrix.python-version }}
+        cache: 'pip'
+    
+    - name: 📦 安装依赖
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        pip install pytest pytest-cov pytest-html pytest-xdist
+    
+    - name: 🧪 运行测试
+      run: |
+        python run_tests.py --ci
+      continue-on-error: false
+    
+    - name: 📊 上传覆盖率报告到Codecov
+      if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.11'
+      uses: codecov/codecov-action@v3
+      with:
+        files: ./coverage.xml
+        flags: unittests
+        name: codecov-umbrella
+        fail_ci_if_error: false
+    
+    - name: 📄 上传测试报告
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: test-reports-${{ matrix.os }}-py${{ matrix.python-version }}
+        path: |
+          test_reports/
+          .coverage
+        retention-days: 30
+    
+    - name: 📈 发布测试结果
+      if: always()
+      uses: EnricoMi/publish-unit-test-result-action/composite@v2
+      with:
+        files: test_reports/junit.xml
+        check_name: Test Results (${{ matrix.os }} - Python ${{ matrix.python-version }})
+
+  lint:
+    name: 代码质量检查
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: 📥 Checkout代码
+      uses: actions/checkout@v4
+    
+    - name: 🐍 设置Python 3.11
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+        cache: 'pip'
+    
+    - name: 📦 安装Lint工具
+      run: |
+        pip install pylint black flake8 mypy
+    
+    - name: 🔍 运行Pylint
+      run: |
+        pylint core/ wifi_modules/ --exit-zero --output-format=text | tee pylint-report.txt
+      continue-on-error: true
+    
+    - name: 🎨 检查代码格式（Black）
+      run: |
+        black --check core/ wifi_modules/ || true
+      continue-on-error: true
+    
+    - name: 📋 运行Flake8
+      run: |
+        flake8 core/ wifi_modules/ --max-line-length=120 --exit-zero
+      continue-on-error: true
+    
+    - name: 📤 上传Lint报告
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: lint-reports
+        path: pylint-report.txt
+        retention-days: 30
+
+  security:
+    name: 安全扫描
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: 📥 Checkout代码
+      uses: actions/checkout@v4
+    
+    - name: 🐍 设置Python 3.11
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+    
+    - name: 🔒 运行Bandit安全扫描
+      run: |
+        pip install bandit
+        bandit -r core/ wifi_modules/ -f json -o bandit-report.json || true
+      continue-on-error: true
+    
+    - name: 📤 上传安全报告
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: security-reports
+        path: bandit-report.json
+        retention-days: 30
+
+  performance:
+    name: 性能测试
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: 📥 Checkout代码
+      uses: actions/checkout@v4
+    
+    - name: 🐍 设置Python 3.11
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+        cache: 'pip'
+    
+    - name: 📦 安装依赖
+      run: |
+        pip install -r requirements.txt
+        pip install pytest pytest-benchmark
+    
+    - name: ⚡ 运行性能测试
+      run: |
+        python run_tests.py --marker performance
+      continue-on-error: true
+
+  badge:
+    name: 更新徽章
+    runs-on: ubuntu-latest
+    needs: [test, lint]
+    if: github.ref == 'refs/heads/main'
+    
+    steps:
+    - name: 📥 Checkout代码
+      uses: actions/checkout@v4
+    
+    - name: 🏅 创建测试通过徽章
+      uses: schneegans/dynamic-badges-action@v1.7.0
+      with:
+        auth: ${{ secrets.GIST_SECRET }}
+        gistID: your-gist-id-here
+        filename: wifi-professional-tests.json
+        label: Tests
+        message: Passing
+        color: green
+      continue-on-error: true

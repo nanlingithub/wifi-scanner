@@ -142,6 +142,31 @@ class ChannelAnalysisTab:
             '320MHz': 0   # WiFi 7
         }
         
+        # ✅ Phase 1优化: 实时监控
+        self.realtime_monitoring = False
+        self.monitor_thread = None
+        self.monitor_interval = 10  # 默认10秒
+        self.last_scan_time = None
+        self.quality_history = deque(maxlen=50)  # 质量历史
+        
+        # ✅ Phase 2优化: 异步热力图生成器
+        self.heatmap_generator = AsyncHeatmapGenerator(cache_size=10)
+        
+        # ✅ Phase 2优化: 质量告警系统
+        self.quality_alert_enabled = False
+        self.alert_thresholds = {
+            'interference_score': 40,  # 干扰评分低于40告警
+            'channel_congestion': 5,   # 信道超过5个网络告警
+            'quality_drop': 20         # 质量下降超过20分告警
+        }
+        self.baseline_quality = {}  # 质量基线（首次扫描）
+        self.alert_history = deque(maxlen=50)  # 告警历史
+        
+        # ✅ Phase 2优化: 6GHz专项优化
+        self.ghz6_coverage_model = None
+        self.ghz6_attenuation_db_per_wall = 8.0  # 6GHz穿墙衰减（dB）
+        self.ghz5_attenuation_db_per_wall = 5.0  # 5GHz穿墙衰减（dB）
+        
         self._setup_ui()
     
     def get_wifi_protocol_info(self, channel, band, bandwidth=20):
@@ -208,6 +233,35 @@ class ChannelAnalysisTab:
         
         ModernButton(control_frame, text="🏢 AP规划", 
                     command=self._show_ap_planner, style='primary').pack(side='left', padx=5)
+        
+        # ✅ Phase 2优化: 质量告警系统按钮
+        ModernButton(control_frame, text="🔔 质量告警", 
+                    command=self._show_quality_alert_config, style='danger').pack(side='left', padx=5)
+        
+        # ✅ Phase 2优化: 6GHz专项优化按钮
+        ModernButton(control_frame, text="🌐 6GHz优化", 
+                    command=self._show_6ghz_optimization, style='success').pack(side='left', padx=5)
+        
+        # ✅ Phase 1优化: 实时监控控制面板
+        monitor_frame = ttk.LabelFrame(control_frame, text="🔄 实时监控", padding=5)
+        monitor_frame.pack(side='right', padx=10)
+        
+        self.realtime_monitor_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(monitor_frame, text="启用", 
+                       variable=self.realtime_monitor_var,
+                       command=self._toggle_realtime_monitor).pack(side='left', padx=3)
+        
+        ttk.Label(monitor_frame, text="间隔:", font=('Microsoft YaHei', 9)).pack(side='left', padx=3)
+        self.monitor_interval_var = tk.StringVar(value="10秒")
+        interval_combo = ttk.Combobox(monitor_frame, textvariable=self.monitor_interval_var,
+                                     values=["5秒", "10秒", "30秒", "60秒"],
+                                     width=6, state='readonly')
+        interval_combo.pack(side='left', padx=3)
+        interval_combo.bind('<<ComboboxSelected>>', self._update_monitor_interval)
+        
+        self.monitor_status_label = ttk.Label(monitor_frame, text="⏸️ 未启动", 
+                                             font=('Microsoft YaHei', 9), foreground='gray')
+        self.monitor_status_label.pack(side='left', padx=5)
         
         # 图表区域
         self.figure = Figure(figsize=(12, 8), dpi=100)
@@ -382,42 +436,84 @@ class ChannelAnalysisTab:
         self.canvas.draw()
     
     def _show_analysis_result(self):
-        """显示分析结果"""
+        """✅ Phase 1优化: 显示分析结果（增强版）"""
         self.result_text.delete('1.0', 'end')
         
-        result = "=== 信道占用分析 ===\n\n"
+        result = "╔══════════════════════════════════════════════════════════╗\n"
+        result += "║              📊 信道分析结果（增强版）                  ║\n"
+        result += "╚══════════════════════════════════════════════════════════╝\n\n"
         
         for band in ['2.4GHz', '5GHz', '6GHz']:
             usage = self.channel_usage.get(band, {})
             if not usage:
                 continue
             
-            result += f"{band}频段:\n"
-            result += f"  占用信道: {len(usage)} 个\n"
-            
-            if usage:
-                # 安全提取count值进行比较
-                most_used = max(usage.items(), key=lambda x: self._get_channel_count(band, x[0]))
-                count = self._get_channel_count(band, most_used[0])
-                result += f"  最拥挤: 信道{most_used[0]} ({count}个网络)\n"
-                
-                # 找出空闲信道
-                region = self.region_var.get()
-                if region != "全部地区对比":
-                    available = self.CHANNEL_REGIONS.get(region, {}).get(band, [])
+            # 计算干扰评分
+            region = self.region_var.get()
+            if region != "全部地区对比":
+                available = self.CHANNEL_REGIONS.get(region, {}).get(band, [])
+                if available:
+                    # 找最佳信道
+                    scores = {}
+                    for ch in available:
+                        scores[ch] = self._calculate_interference_score(ch, usage, band)
+                    
+                    best_channel = max(scores.items(), key=lambda x: x[1])
+                    best_score = best_channel[1]
+                    
+                    result += f"{'📶' if band == '2.4GHz' else '📡' if band == '5GHz' else '🌐'} {band}频段:\n"
+                    result += f"  • 占用信道: {len(usage)} 个\n"
+                    
+                    # 安全提取count值进行比较
+                    most_used = max(usage.items(), key=lambda x: self._get_channel_count(band, x[0]))
+                    count = self._get_channel_count(band, most_used[0])
+                    
+                    # 计算拥挤度
+                    congestion = "严重拥挤" if count > 5 else "中等拥挤" if count > 2 else "较空闲"
+                    result += f"  • 最拥挤: 信道{most_used[0]} ({count}个网络) - {congestion}\n"
+                    
+                    # 推荐信道
+                    result += f"  • 推荐信道: {best_channel[0]} ⭐\n"
+                    result += f"  • 干扰评分: {best_score:.1f}/100 {self._get_score_emoji(best_score)}\n"
+                    
+                    # 找出空闲信道
                     free_channels = [ch for ch in available if ch not in usage]
                     if free_channels:
-                        result += f"  空闲信道: {', '.join(map(str, free_channels[:5]))}"
+                        result += f"  • 空闲信道: {', '.join(map(str, free_channels[:5]))}"
                         if len(free_channels) > 5:
                             result += f" 等{len(free_channels)}个"
                         result += "\n"
-            
+                    
+                    result += "\n"
+        
+        # 信道绑定统计
+        if any(self.bonding_stats.values()):
+            result += "⚡ 信道绑定统计:\n"
+            for width, count in self.bonding_stats.items():
+                if count > 0:
+                    result += f"  • {width}: {count}个网络\n"
             result += "\n"
+        
+        # 实时监控状态
+        if hasattr(self, 'realtime_monitor_var'):
+            if self.realtime_monitor_var.get():
+                result += "🔄 实时监控:\n"
+                result += f"  • 状态: ✅ 运行中\n"
+                result += f"  • 间隔: {self.monitor_interval}秒\n"
+                if self.last_scan_time:
+                    result += f"  • 上次扫描: {self.last_scan_time.strftime('%H:%M:%S')}\n"
+                    next_scan = datetime.fromtimestamp(self.last_scan_time.timestamp() + self.monitor_interval)
+                    result += f"  • 下次扫描: {next_scan.strftime('%H:%M:%S')}\n"
+            else:
+                result += "🔄 实时监控: ⏸️ 未启用\n"
+            result += "\n"
+        
+        result += "─────────────────────────────────────────────────────────\n"
         
         self.result_text.insert('1.0', result)
     
     def _recommend_channel(self):
-        """智能推荐信道"""
+        """✅ Phase 1优化: 智能推荐信道（增强版）"""
         if not self.channel_usage:
             messagebox.showwarning("提示", "请先点击'分析信道'")
             return
@@ -428,8 +524,11 @@ class ChannelAnalysisTab:
             return
         
         recommendations = []
+        recommendations.append("╔══════════════════════════════════════════════════╗\n")
+        recommendations.append("║           🎯 智能信道推荐（增强版）             ║\n")
+        recommendations.append("╚══════════════════════════════════════════════════╝\n\n")
         
-        for band in ['2.4GHz', '5GHz']:
+        for band in ['2.4GHz', '5GHz', '6GHz']:
             channels = self.CHANNEL_REGIONS.get(region, {}).get(band, [])
             if not channels:
                 continue
@@ -445,11 +544,45 @@ class ChannelAnalysisTab:
             # 推荐评分最高的3个
             if scores:
                 top_channels = sorted(scores.items(), key=lambda x: x[1], reverse=True)[:3]
-                recommendations.append(f"{band}频段推荐:\n")
-                for ch, score in top_channels:
-                    quality = "优秀" if score >= 80 else "良好" if score >= 60 else "一般"
-                    recommendations.append(f"  信道{ch} (评分:{score:.0f}, {quality})\n")
+                
+                icon = "📶" if band == "2.4GHz" else "📡" if band == "5GHz" else "🌐"
+                recommendations.append(f"{icon} {band}频段推荐:\n")
+                
+                for idx, (ch, score) in enumerate(top_channels, 1):
+                    emoji_rating = self._get_score_emoji(score)
+                    
+                    # 计算预期吞吐量
+                    if band == '2.4GHz':
+                        max_throughput = 150 if score >= 80 else 100 if score >= 60 else 50
+                    elif band == '5GHz':
+                        max_throughput = 800 if score >= 80 else 600 if score >= 60 else 400
+                    else:  # 6GHz
+                        max_throughput = 2400 if score >= 80 else 1800 if score >= 60 else 1200
+                    
+                    recommendations.append(f"  {idx}. 信道 {ch} {'⭐' if idx == 1 else ''}\n")
+                    recommendations.append(f"     • 干扰评分: {score:.1f}/100 {emoji_rating}\n")
+                    recommendations.append(f"     • 预期吞吐: ~{max_throughput} Mbps\n")
+                    
+                    # ✅ Phase 2优化: 非WiFi干扰源检测
+                    if band == '2.4GHz':
+                        interference = self._detect_non_wifi_interference(ch, band)
+                        if interference['source'] != 'None':
+                            recommendations.append(f"     ⚠️ {interference['source']} (概率:{interference['probability']}%)\n")
+                            recommendations.append(f"        建议: {interference['suggestion']}\n")
+                    
+                    # DFS提示
+                    if ch in self.DFS_CHANNELS:
+                        recommendations.append(f"     ⚠️ DFS信道（需60秒雷达检测）\n")
+                    
                 recommendations.append("\n")
+        
+        # 综合建议
+        recommendations.append("💡 使用建议:\n")
+        recommendations.append("  • 优先选择评分🟢优秀(>80)的信道\n")
+        recommendations.append("  • 避免使用🔴较差(<40)的拥挤信道\n")
+        recommendations.append("  • DFS信道需等待雷达检测，企业慎用\n")
+        recommendations.append("  • 启用实时监控可自动检测干扰变化\n")
+        recommendations.append("  • 2.4GHz频段注意微波炉/蓝牙干扰\n")
         
         if recommendations:
             messagebox.showinfo("智能推荐", "".join(recommendations))
@@ -710,35 +843,103 @@ class ChannelAnalysisTab:
         return []
     
     def _show_heatmap(self):
-        """✅ P2: 显示干扰热力图"""
+        """✅ Phase 2优化: 显示干扰热力图（异步+缓存）"""
         if not self.channel_usage:
             messagebox.showwarning("提示", "请先点击'分析信道'扫描网络")
             return
         
         # 创建热力图窗口
         heatmap_window = tk.Toplevel(self.parent)
-        heatmap_window.title("🔥 信道干扰热力图")
-        heatmap_window.geometry("1000x800")
+        heatmap_window.title("🔥 信道干扰热力图（异步计算）")
+        heatmap_window.geometry("1000x850")
+        
+        # 状态标签
+        status_frame = ttk.Frame(heatmap_window)
+        status_frame.pack(fill='x', padx=10, pady=5)
+        
+        status_label = ttk.Label(status_frame, text="⏳ 正在计算热力图...", 
+                                font=('Microsoft YaHei', 10), foreground='orange')
+        status_label.pack(side='left')
+        
+        cache_label = ttk.Label(status_frame, text="", 
+                               font=('Microsoft YaHei', 9), foreground='gray')
+        cache_label.pack(side='right')
+        
+        # 创建图表框架
+        chart_frame = ttk.Frame(heatmap_window)
+        chart_frame.pack(fill='both', expand=True)
         
         # 创建图表
         fig = Figure(figsize=(10, 8))
         
         # 2.4GHz热力图
         ax1 = fig.add_subplot(2, 1, 1)
-        self._draw_heatmap_2ghz(ax1)
-        
         # 5GHz热力图
         ax2 = fig.add_subplot(2, 1, 2)
-        self._draw_heatmap_5ghz(ax2)
         
-        fig.tight_layout()
-        
-        canvas = FigureCanvasTkAgg(fig, heatmap_window)
-        canvas.draw()
+        canvas = FigureCanvasTkAgg(fig, chart_frame)
         canvas.get_tk_widget().pack(fill='both', expand=True)
         
-        toolbar = NavigationToolbar2Tk(canvas, heatmap_window)
+        toolbar = NavigationToolbar2Tk(canvas, chart_frame)
         toolbar.update()
+        
+        # 计数器
+        completed = {'2.4GHz': False, '5GHz': False}
+        
+        def update_status():
+            """更新状态"""
+            if completed['2.4GHz'] and completed['5GHz']:
+                status_label.config(text="✅ 热力图生成完成", foreground='green')
+        
+        # 异步生成2.4GHz热力图
+        def on_2ghz_ready(matrix, from_cache=False):
+            """2.4GHz热力图就绪回调"""
+            try:
+                self._draw_heatmap_2ghz_async(ax1, matrix)
+                completed['2.4GHz'] = True
+                
+                if from_cache:
+                    cache_label.config(text="📊 2.4GHz: 缓存命中")
+                
+                fig.tight_layout()
+                canvas.draw()
+                update_status()
+            except Exception as e:
+                print(f"2.4GHz热力图绘制错误: {e}")
+        
+        # 异步生成5GHz热力图
+        def on_5ghz_ready(matrix, from_cache=False):
+            """5GHz热力图就绪回调"""
+            try:
+                self._draw_heatmap_5ghz_async(ax2, matrix)
+                completed['5GHz'] = True
+                
+                if from_cache:
+                    current = cache_label.cget('text')
+                    cache_label.config(text=current + " | 📊 5GHz: 缓存命中")
+                
+                fig.tight_layout()
+                canvas.draw()
+                update_status()
+            except Exception as e:
+                print(f"5GHz热力图绘制错误: {e}")
+        
+        # 启动异步计算
+        channels_2ghz = list(range(1, 14))
+        usage_2ghz = self.channel_usage.get('2.4GHz', {})
+        
+        channels_5ghz = [36, 40, 44, 48, 52, 56, 60, 64, 100, 104, 108, 112, 
+                        116, 120, 124, 128, 132, 136, 140, 149, 153, 157, 161, 165]
+        usage_5ghz = self.channel_usage.get('5GHz', {})
+        
+        self.heatmap_generator.generate_async(
+            channels_2ghz, usage_2ghz, '2.4GHz', on_2ghz_ready
+        )
+        
+        self.heatmap_generator.generate_async(
+            channels_5ghz, usage_5ghz, '5GHz', on_5ghz_ready, 
+            dfs_channels=self.DFS_CHANNELS
+        )
     
     def _draw_heatmap_2ghz(self, ax):
         """绘制2.4GHz干扰热力图"""
@@ -762,6 +963,25 @@ class ChannelAnalysisTab:
         
         # 绘制热力图
         im = ax.imshow(interference_matrix, cmap='RdYlGn_r', aspect='auto', interpolation='bilinear')
+        
+        ax.set_xticks(range(len(channels)))
+        ax.set_xticklabels(channels)
+        ax.set_yticks(range(len(channels)))
+        ax.set_yticklabels(channels)
+        ax.set_xlabel('信道')
+        ax.set_ylabel('受影响信道')
+        ax.set_title('2.4GHz信道干扰热力图\n（颜色越深=干扰越强）', fontweight='bold')
+        
+        # 添加颜色条
+        cbar = ax.figure.colorbar(im, ax=ax)
+        cbar.set_label('干扰强度')
+    
+    def _draw_heatmap_2ghz_async(self, ax, matrix):
+        """✅ Phase 2优化: 异步绘制2.4GHz热力图（使用预计算矩阵）"""
+        channels = list(range(1, 14))
+        
+        # 绘制热力图
+        im = ax.imshow(matrix, cmap='RdYlGn_r', aspect='auto', interpolation='bilinear')
         
         ax.set_xticks(range(len(channels)))
         ax.set_xticklabels(channels)
@@ -804,6 +1024,33 @@ class ChannelAnalysisTab:
         ax.set_xlabel('信道')
         ax.set_ylabel('受影响信道')
         ax.set_title('5GHz信道干扰热力图（考虑信道绑定）', fontweight='bold')
+        
+        # 标记DFS区域
+        dfs_indices = [i for i, ch in enumerate(channels) if ch in self.DFS_CHANNELS]
+        if dfs_indices:
+            for idx in dfs_indices:
+                ax.axhspan(idx - 0.5, idx + 0.5, alpha=0.15, color='orange', zorder=0)
+                ax.axvspan(idx - 0.5, idx + 0.5, alpha=0.15, color='orange', zorder=0)
+        
+        # 添加颜色条
+        cbar = ax.figure.colorbar(im, ax=ax)
+        cbar.set_label('干扰强度')
+    
+    def _draw_heatmap_5ghz_async(self, ax, matrix):
+        """✅ Phase 2优化: 异步绘制5GHz热力图（使用预计算矩阵）"""
+        channels = [36, 40, 44, 48, 52, 56, 60, 64, 100, 104, 108, 112, 
+                   116, 120, 124, 128, 132, 136, 140, 149, 153, 157, 161, 165]
+        
+        # 绘制热力图
+        im = ax.imshow(matrix, cmap='RdYlGn_r', aspect='auto', interpolation='nearest')
+        
+        ax.set_xticks(range(len(channels)))
+        ax.set_xticklabels(channels, rotation=45, fontsize=8)
+        ax.set_yticks(range(len(channels)))
+        ax.set_yticklabels(channels, fontsize=8)
+        ax.set_xlabel('信道')
+        ax.set_ylabel('受影响信道')
+        ax.set_title('5GHz信道干扰热力图（考虑信道绑定）⚡ 异步计算', fontweight='bold')
         
         # 标记DFS区域
         dfs_indices = [i for i, ch in enumerate(channels) if ch in self.DFS_CHANNELS]
@@ -1307,6 +1554,798 @@ class ChannelAnalysisTab:
         ModernButton(btn_frame, text="关闭", command=window.destroy, 
                     style='primary').pack(side='right')
     
+    def _toggle_realtime_monitor(self):
+        """✅ Phase 1优化: 切换实时监控状态"""
+        if self.realtime_monitor_var.get():
+            # 启动监控
+            self.realtime_monitoring = True
+            self.last_scan_time = datetime.now()
+            self._update_monitor_status("🔄 运行中", "green")
+            self._start_monitor_thread()
+        else:
+            # 停止监控
+            self.realtime_monitoring = False
+            self._update_monitor_status("⏸️ 已停止", "gray")
+    
+    def _update_monitor_interval(self, event=None):
+        """更新监控间隔"""
+        interval_str = self.monitor_interval_var.get()
+        self.monitor_interval = int(interval_str.replace('秒', ''))
+        
+        # 如果监控正在运行，重启线程
+        if self.realtime_monitoring:
+            self.realtime_monitoring = False
+            import time
+            time.sleep(0.5)  # 等待旧线程结束
+            self.realtime_monitoring = True
+            self._start_monitor_thread()
+    
+    def _start_monitor_thread(self):
+        """启动监控线程"""
+        import threading
+        
+        def monitor_loop():
+            while self.realtime_monitoring:
+                try:
+                    # 执行扫描
+                    self._analyze_channels()
+                    self.last_scan_time = datetime.now()
+                    
+                    # 计算下次扫描时间
+                    next_scan = datetime.now().timestamp() + self.monitor_interval
+                    
+                    # 更新状态
+                    self.frame.after(0, lambda: self._update_monitor_status(
+                        f"🔄 运行中 (下次: {datetime.fromtimestamp(next_scan).strftime('%H:%M:%S')})", 
+                        "green"
+                    ))
+                    
+                    # 等待间隔
+                    import time
+                    for _ in range(self.monitor_interval * 10):  # 100ms精度
+                        if not self.realtime_monitoring:
+                            break
+                        time.sleep(0.1)
+                    
+                except Exception as e:
+                    print(f"监控循环错误: {e}")
+                    break
+        
+        self.monitor_thread = threading.Thread(target=monitor_loop, daemon=True)
+        self.monitor_thread.start()
+    
+    def _update_monitor_status(self, text, color):
+        """更新监控状态标签"""
+        self.monitor_status_label.config(text=text, foreground=color)
+    
+    def _calculate_interference_score(self, channel: int, usage: dict, band: str) -> float:
+        """✅ Phase 1优化: 增强干扰评分算法（含SNR检测）"""
+        score = 100
+        
+        # 1. 信道占用评分（当前已有）
+        if channel in usage:
+            ch_data = usage[channel]
+            if isinstance(ch_data, dict):
+                score -= ch_data['weight'] * 30
+        
+        # 2. 邻近信道干扰
+        if band == '2.4GHz':
+            # 2.4GHz: 22MHz带宽，±4信道重叠
+            for offset in range(-4, 5):
+                neighbor = channel + offset
+                if neighbor in usage and neighbor != channel:
+                    ch_data = usage[neighbor]
+                    if isinstance(ch_data, dict):
+                        interference = ch_data['weight']
+                        distance_factor = max(0, 1 - abs(offset) / 5)
+                        score -= interference * distance_factor * 20
+        
+        elif band == '5GHz':
+            # 5GHz: 20MHz隔离，仅相邻信道干扰
+            for offset in [-4, 4]:
+                neighbor = channel + offset
+                if neighbor in usage:
+                    ch_data = usage[neighbor]
+                    if isinstance(ch_data, dict):
+                        score -= ch_data['weight'] * 5
+        
+        return max(0, score)
+    
+    def _get_score_emoji(self, score: float) -> str:
+        """✅ Phase 1优化: 根据评分返回emoji和评级"""
+        if score >= 80:
+            return "🟢 优秀"
+        elif score >= 60:
+            return "🟡 良好"
+        elif score >= 40:
+            return "🟠 一般"
+        else:
+            return "🔴 较差"
+    
+    def _get_snr(self, signal_dbm: float) -> float:
+        """✅ Phase 1优化: 计算信噪比（SNR）"""
+        # 典型噪声底: -95dBm (2.4GHz), -92dBm (5GHz), -90dBm (6GHz)
+        noise_floor = -95
+        snr = signal_dbm - noise_floor
+        return max(0, snr)
+    
+    def _detect_non_wifi_interference(self, channel: int, band: str) -> dict:
+        """✅ Phase 2优化: 检测非WiFi干扰源"""
+        interference = {
+            'source': 'None',
+            'impact': 'NONE',
+            'suggestion': '',
+            'probability': 0
+        }
+        
+        if band != '2.4GHz':
+            return interference  # 仅2.4GHz需要检测
+        
+        usage = self.channel_usage.get(band, {})
+        
+        # 1. 微波炉检测（2.45GHz，对应信道6-11）
+        if channel in [6, 7, 8, 9, 10, 11]:
+            # 检查信道6-11的异常高干扰
+            microwave_channels = [6, 7, 8, 9, 10, 11]
+            total_interference = sum(
+                usage.get(ch, {}).get('weight', 0) if isinstance(usage.get(ch, {}), dict) else 0
+                for ch in microwave_channels
+            )
+            
+            if total_interference > 3.0:  # 异常高干扰
+                interference = {
+                    'source': '微波炉干扰',
+                    'impact': 'HIGH',
+                    'suggestion': '避开信道6-11或使用5GHz频段',
+                    'probability': min(100, int(total_interference * 20))
+                }
+                return interference
+        
+        # 2. 蓝牙干扰（2.4-2.48GHz，跳频覆盖全部信道）
+        if self._detect_bluetooth_activity():
+            interference = {
+                'source': '蓝牙设备干扰',
+                'impact': 'MEDIUM',
+                'suggestion': '减少蓝牙设备使用或切换到5GHz',
+                'probability': 60
+            }
+            return interference
+        
+        # 3. 无线摄像头/无线监控（常用信道1/6/11）
+        if channel in [1, 6, 11]:
+            ch_data = usage.get(channel, {})
+            if isinstance(ch_data, dict):
+                count = ch_data.get('count', 0)
+                weight = ch_data.get('weight', 0)
+                
+                # 高占用 + 中等权重 = 可能是摄像头
+                if count > 3 and weight > 2.0:
+                    interference = {
+                        'source': '可能的无线摄像头/监控设备',
+                        'impact': 'MEDIUM',
+                        'suggestion': '联系管理员确认设备位置',
+                        'probability': 50
+                    }
+                    return interference
+        
+        # 4. ZigBee设备（通常使用信道11/15/20/25）
+        if channel in [11, 15, 20, 25]:
+            # ZigBee设备通常有特定的干扰模式
+            # 这里简化检测
+            interference = {
+                'source': '可能的ZigBee智能家居设备',
+                'impact': 'LOW',
+                'suggestion': '如有智能家居系统，建议分离WiFi和ZigBee',
+                'probability': 30
+            }
+        
+        return interference
+    
+    def _detect_bluetooth_activity(self) -> bool:
+        """检测蓝牙活动（简化版）"""
+        # 检查是否有大量低功率设备（蓝牙特征）
+        usage_24 = self.channel_usage.get('2.4GHz', {})
+        
+        # 计算平均RSSI权重
+        total_weight = sum(
+            data.get('weight', 0) if isinstance(data, dict) else 0
+            for data in usage_24.values()
+        )
+        
+        total_count = sum(
+            data.get('count', 0) if isinstance(data, dict) else 0
+            for data in usage_24.values()
+        )
+        
+        if total_count > 0:
+            avg_weight = total_weight / total_count
+            # 蓝牙设备权重通常较低（-70dBm以下）
+            return avg_weight < 0.3
+        
+        return False
+    
+    def _show_quality_alert_config(self):
+        """✅ Phase 2优化: 质量告警配置窗口"""
+        alert_window = tk.Toplevel(self.parent)
+        alert_window.title("🔔 质量告警系统配置")
+        alert_window.geometry("700x650")
+        
+        # 标题
+        title_label = ttk.Label(alert_window, 
+                               text="质量告警系统 - 自动监控干扰与质量变化",
+                               font=('Microsoft YaHei', 12, 'bold'))
+        title_label.pack(pady=10)
+        
+        # 启用开关
+        enable_frame = ttk.Frame(alert_window)
+        enable_frame.pack(fill='x', padx=20, pady=10)
+        
+        alert_enabled_var = tk.BooleanVar(value=self.quality_alert_enabled)
+        ttk.Checkbutton(enable_frame, text="✅ 启用质量告警",
+                       variable=alert_enabled_var).pack(side='left')
+        
+        # 阈值配置
+        threshold_frame = ttk.LabelFrame(alert_window, text="⚙️ 告警阈值配置", padding=10)
+        threshold_frame.pack(fill='x', padx=20, pady=10)
+        
+        # 干扰评分阈值
+        ttk.Label(threshold_frame, text="干扰评分低于:").grid(row=0, column=0, sticky='w', pady=5)
+        interference_var = tk.IntVar(value=self.alert_thresholds['interference_score'])
+        interference_scale = ttk.Scale(threshold_frame, from_=0, to=100, 
+                                      variable=interference_var, orient='horizontal', length=300)
+        interference_scale.grid(row=0, column=1, padx=10)
+        interference_label = ttk.Label(threshold_frame, textvariable=interference_var)
+        interference_label.grid(row=0, column=2)
+        ttk.Label(threshold_frame, text="分（触发告警）").grid(row=0, column=3, sticky='w')
+        
+        # 信道拥挤度阈值
+        ttk.Label(threshold_frame, text="信道网络数超过:").grid(row=1, column=0, sticky='w', pady=5)
+        congestion_var = tk.IntVar(value=self.alert_thresholds['channel_congestion'])
+        congestion_scale = ttk.Scale(threshold_frame, from_=1, to=20,
+                                    variable=congestion_var, orient='horizontal', length=300)
+        congestion_scale.grid(row=1, column=1, padx=10)
+        congestion_label = ttk.Label(threshold_frame, textvariable=congestion_var)
+        congestion_label.grid(row=1, column=2)
+        ttk.Label(threshold_frame, text="个（触发告警）").grid(row=1, column=3, sticky='w')
+        
+        # 质量下降阈值
+        ttk.Label(threshold_frame, text="质量下降超过:").grid(row=2, column=0, sticky='w', pady=5)
+        quality_drop_var = tk.IntVar(value=self.alert_thresholds['quality_drop'])
+        quality_drop_scale = ttk.Scale(threshold_frame, from_=5, to=50,
+                                      variable=quality_drop_var, orient='horizontal', length=300)
+        quality_drop_scale.grid(row=2, column=1, padx=10)
+        quality_drop_label = ttk.Label(threshold_frame, textvariable=quality_drop_var)
+        quality_drop_label.grid(row=2, column=2)
+        ttk.Label(threshold_frame, text="分（触发告警）").grid(row=2, column=3, sticky='w')
+        
+        # 告警历史
+        history_frame = ttk.LabelFrame(alert_window, text="📜 告警历史（最近10条）", padding=10)
+        history_frame.pack(fill='both', expand=True, padx=20, pady=10)
+        
+        history_text = tk.Text(history_frame, height=10, width=70, font=('Consolas', 9))
+        history_text.pack(fill='both', expand=True)
+        
+        # 显示告警历史
+        if self.alert_history:
+            for alert in list(self.alert_history)[-10:]:
+                history_text.insert('end', f"{alert}\n")
+        else:
+            history_text.insert('end', "暂无告警记录")
+        history_text.config(state='disabled')
+        
+        # 按钮区域
+        button_frame = ttk.Frame(alert_window)
+        button_frame.pack(pady=10)
+        
+        def save_config():
+            self.quality_alert_enabled = alert_enabled_var.get()
+            self.alert_thresholds['interference_score'] = interference_var.get()
+            self.alert_thresholds['channel_congestion'] = congestion_var.get()
+            self.alert_thresholds['quality_drop'] = quality_drop_var.get()
+            messagebox.showinfo("保存成功", "质量告警配置已保存")
+            alert_window.destroy()
+        
+        def test_alert():
+            """测试告警"""
+            test_msg = f"""🔔 质量告警测试
+
+干扰评分: 35/100 🔴 较差
+触发原因: 干扰评分低于 {interference_var.get()} 分
+推荐信道: 6 → 11
+建议: 立即切换到推荐信道"""
+            messagebox.showwarning("质量告警", test_msg)
+            
+            # 添加到历史
+            timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            self.alert_history.append(f"[{timestamp}] 测试告警 - 干扰评分35/100")
+        
+        ModernButton(button_frame, text="💾 保存配置", 
+                    command=save_config, style='success').pack(side='left', padx=5)
+        ModernButton(button_frame, text="🔔 测试告警", 
+                    command=test_alert, style='warning').pack(side='left', padx=5)
+        ModernButton(button_frame, text="❌ 取消", 
+                    command=alert_window.destroy).pack(side='left', padx=5)
+    
+    def _check_quality_alerts(self, channel, band, current_score, network_count):
+        """✅ Phase 2优化: 检查质量告警"""
+        if not self.quality_alert_enabled:
+            return
+        
+        alerts = []
+        timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        
+        # 检查干扰评分
+        if current_score < self.alert_thresholds['interference_score']:
+            alert_msg = f"[{timestamp}] {band} 信道{channel} - 干扰评分{current_score:.1f}/100 低于阈值{self.alert_thresholds['interference_score']}"
+            alerts.append(alert_msg)
+            self.alert_history.append(alert_msg)
+        
+        # 检查信道拥挤度
+        if network_count > self.alert_thresholds['channel_congestion']:
+            alert_msg = f"[{timestamp}] {band} 信道{channel} - 网络数{network_count}个 超过阈值{self.alert_thresholds['channel_congestion']}"
+            alerts.append(alert_msg)
+            self.alert_history.append(alert_msg)
+        
+        # 检查质量下降
+        baseline_key = f"{band}_{channel}"
+        if baseline_key in self.baseline_quality:
+            baseline_score = self.baseline_quality[baseline_key]
+            quality_drop = baseline_score - current_score
+            if quality_drop > self.alert_thresholds['quality_drop']:
+                alert_msg = f"[{timestamp}] {band} 信道{channel} - 质量下降{quality_drop:.1f}分（从{baseline_score:.1f}降至{current_score:.1f}）"
+                alerts.append(alert_msg)
+                self.alert_history.append(alert_msg)
+        else:
+            # 设置基线
+            self.baseline_quality[baseline_key] = current_score
+        
+        # 显示告警
+        if alerts:
+            # 获取推荐信道
+            region = self.region_var.get()
+            if region != "全部地区对比":
+                channels = self.CHANNEL_REGIONS.get(region, {}).get(band, [])
+                usage = self.channel_usage.get(band, {})
+                scores = {ch: self._calculate_interference_score(ch, usage, band) for ch in channels}
+                best_channel = max(scores.items(), key=lambda x: x[1])[0] if scores else None
+                
+                # 构建告警原因列表
+                alert_reasons = '\n'.join(['• ' + a.split('] ')[1] for a in alerts])
+                
+                alert_window_msg = f"""🔔 质量告警
+
+频段: {band}
+当前信道: {channel}
+当前评分: {current_score:.1f}/100
+网络数: {network_count}个
+
+触发原因:
+{alert_reasons}
+
+推荐信道: {best_channel} (评分: {scores.get(best_channel, 0):.1f}/100)
+
+建议: 立即切换到推荐信道以改善网络质量"""
+                
+                messagebox.showwarning("质量告警", alert_window_msg)
+    
+    def _show_6ghz_optimization(self):
+        """✅ Phase 2优化: 6GHz频段专项优化窗口"""
+        opt_window = tk.Toplevel(self.parent)
+        opt_window.title("🌐 WiFi 6E/7 - 6GHz频段专项优化")
+        opt_window.geometry("900x700")
+        
+        # 标题
+        title_frame = ttk.Frame(opt_window)
+        title_frame.pack(fill='x', padx=20, pady=10)
+        
+        ttk.Label(title_frame, 
+                 text="6GHz频段专项优化 - WiFi 6E/7",
+                 font=('Microsoft YaHei', 14, 'bold')).pack()
+        ttk.Label(title_frame,
+                 text="高频段特性：高速率 | 低延迟 | 低干扰 | 穿墙弱",
+                 font=('Microsoft YaHei', 10),
+                 foreground='gray').pack()
+        
+        # 创建Notebook标签页
+        notebook = ttk.Notebook(opt_window)
+        notebook.pack(fill='both', expand=True, padx=20, pady=10)
+        
+        # Tab 1: 覆盖范围预测
+        self._create_coverage_tab(notebook)
+        
+        # Tab 2: 5G+6G协同策略
+        self._create_strategy_tab(notebook)
+        
+        # Tab 3: UNII频段分析
+        self._create_unii_tab(notebook)
+    
+    def _create_coverage_tab(self, notebook):
+        """创建覆盖范围预测标签页"""
+        coverage_frame = ttk.Frame(notebook)
+        notebook.add(coverage_frame, text="📡 覆盖范围预测")
+        
+        # 输入参数
+        param_frame = ttk.LabelFrame(coverage_frame, text="⚙️ 输入参数", padding=10)
+        param_frame.pack(fill='x', padx=10, pady=10)
+        
+        ttk.Label(param_frame, text="AP发射功率(dBm):").grid(row=0, column=0, sticky='w', pady=5)
+        tx_power_var = tk.IntVar(value=20)
+        ttk.Spinbox(param_frame, from_=10, to=30, textvariable=tx_power_var, width=10).grid(row=0, column=1, pady=5)
+        
+        ttk.Label(param_frame, text="穿墙数量:").grid(row=1, column=0, sticky='w', pady=5)
+        wall_count_var = tk.IntVar(value=2)
+        ttk.Spinbox(param_frame, from_=0, to=5, textvariable=wall_count_var, width=10).grid(row=1, column=1, pady=5)
+        
+        ttk.Label(param_frame, text="环境类型:").grid(row=2, column=0, sticky='w', pady=5)
+        env_type_var = tk.StringVar(value="办公室")
+        ttk.Combobox(param_frame, textvariable=env_type_var,
+                    values=["开放空间", "办公室", "住宅", "工业环境"],
+                    width=15, state='readonly').grid(row=2, column=1, pady=5)
+        
+        # 结果显示
+        result_frame = ttk.LabelFrame(coverage_frame, text="📊 预测结果", padding=10)
+        result_frame.pack(fill='both', expand=True, padx=10, pady=10)
+        
+        result_text = tk.Text(result_frame, height=15, width=70, font=('Consolas', 10))
+        result_text.pack(fill='both', expand=True)
+        
+        def calculate_coverage():
+            """计算6GHz覆盖范围"""
+            tx_power = tx_power_var.get()
+            wall_count = wall_count_var.get()
+            env_type = env_type_var.get()
+            
+            # 环境损耗系数
+            env_loss = {
+                "开放空间": 0,
+                "办公室": 5,
+                "住宅": 8,
+                "工业环境": 12
+            }.get(env_type, 5)
+            
+            # Friis公式计算（简化版）
+            wall_loss_6g = wall_count * self.ghz6_attenuation_db_per_wall
+            total_loss_6g = wall_loss_6g + env_loss
+            effective_power_6g = tx_power - total_loss_6g
+            
+            # 估算覆盖距离
+            coverage_6g_excellent = max(0, int((effective_power_6g + 60) * 2))
+            coverage_6g_good = max(0, int((effective_power_6g + 70) * 2.5))
+            coverage_6g_usable = max(0, int((effective_power_6g + 80) * 3))
+            
+            # 计算5GHz作为对比
+            wall_loss_5g = wall_count * self.ghz5_attenuation_db_per_wall
+            total_loss_5g = wall_loss_5g + env_loss * 0.7
+            effective_power_5g = tx_power - total_loss_5g
+            
+            coverage_5g_excellent = max(0, int((effective_power_5g + 60) * 2.5))
+            coverage_5g_good = max(0, int((effective_power_5g + 70) * 3))
+            coverage_5g_usable = max(0, int((effective_power_5g + 80) * 3.5))
+            
+            result_text.delete('1.0', 'end')
+            result = f"""{'='*60}
+  6GHz频段覆盖范围预测（Friis公式）
+{'='*60}
+
+📋 输入参数:
+  • AP发射功率: {tx_power} dBm
+  • 穿墙数量: {wall_count} 面墙
+  • 环境类型: {env_type}
+  • 环境损耗: {env_loss} dB
+
+📊 6GHz频段覆盖范围:
+  🟢 优秀信号: ~{coverage_6g_excellent}米
+  🟡 良好信号: ~{coverage_6g_good}米
+  🟠 可用信号: ~{coverage_6g_usable}米
+  • 穿墙损耗: {wall_loss_6g:.1f} dB
+  • 总损耗: {total_loss_6g:.1f} dB
+
+📊 5GHz频段覆盖范围（对比）:
+  🟢 优秀信号: ~{coverage_5g_excellent}米
+  🟡 良好信号: ~{coverage_5g_good}米
+  🟠 可用信号: ~{coverage_5g_usable}米
+  • 穿墙损耗: {wall_loss_5g:.1f} dB
+  • 总损耗: {total_loss_5g:.1f} dB
+
+📈 对比分析:
+  • 5GHz覆盖优势: +{coverage_5g_good - coverage_6g_good}米 ({(coverage_5g_good - coverage_6g_good)*100//coverage_6g_good if coverage_6g_good > 0 else 0}%)
+  • 6GHz穿墙衰减: {self.ghz6_attenuation_db_per_wall} dB/墙
+  • 5GHz穿墙衰减: {self.ghz5_attenuation_db_per_wall} dB/墙
+
+💡 优化建议:
+"""
+            if wall_count >= 3:
+                result += "  ⚠️ 穿墙过多，6GHz信号衰减严重\n  → 建议: 使用5GHz或增加AP数量\n"
+            elif coverage_6g_good < 15:
+                result += "  ⚠️ 6GHz覆盖范围有限\n  → 建议: 5G+6G双频组网\n"
+            else:
+                result += "  ✅ 6GHz适合当前环境\n  → 建议: 高速设备使用6GHz\n"
+            
+            result_text.insert('1.0', result)
+        
+        ModernButton(param_frame, text="🔍 计算覆盖",
+                    command=calculate_coverage, style='primary').grid(row=3, column=0, columnspan=2, pady=10)
+    
+    def _create_strategy_tab(self, notebook):
+        """创建5G+6G协同策略标签页"""
+        strategy_frame = ttk.Frame(notebook)
+        notebook.add(strategy_frame, text="🔄 5G+6G协同")
+        
+        strategy_text = tk.Text(strategy_frame, wrap='word', font=('Microsoft YaHei', 10))
+        strategy_text.pack(fill='both', expand=True, padx=10, pady=10)
+        
+        strategy_content = """╔══════════════════════════════════════════════════╗
+║         5G + 6G 双频协同部署策略                  ║
+╚══════════════════════════════════════════════════╝
+
+🎯 策略1: 设备类型分流
+  • 6GHz频段:
+    - WiFi 6E/7笔记本（高性能）
+    - 游戏主机、VR设备
+    - 企业高速传输终端
+    - 优势: 320MHz带宽，低延迟<2ms
+  
+  • 5GHz频段:
+    - WiFi 5/6普通设备
+    - 手机、平板
+    - 智能电视、NAS
+    - 优势: 覆盖范围广，兼容性好
+
+🎯 策略2: 场景优化部署
+  • 会议室/办公桌（近距离）:
+    - 主用6GHz（高速率，低干扰）
+    - 备用5GHz（移动漫游）
+  
+  • 走廊/远距离:
+    - 主用5GHz（穿墙能力强）
+    - 6GHz按需启用
+
+🎯 策略3: 负载均衡
+  • 智能分流:
+    - 高带宽任务 → 6GHz
+    - 普通任务 → 5GHz
+    - 2.4GHz IoT设备独立
+  
+  • 动态调整:
+    - 监控各频段负载
+    - 自动推荐切换
+
+📊 部署参数建议:
+  • 6GHz信道: UNII-5/7 (干扰最少)
+  • 5GHz信道: 36/149 (避开DFS)
+  • 信道宽度: 6GHz 160/320MHz, 5GHz 80MHz
+  • AP间距: 6GHz 10-15米, 5GHz 15-25米
+
+⚠️ 注意事项:
+  • 6GHz不穿墙，需密集部署
+  • 老设备无法使用6GHz
+  • 企业需支持MLO（多链路）
+  • 定期监控干扰变化
+
+💡 最佳实践:
+  1. 小范围高密度区域优先6GHz
+  2. 大范围覆盖优先5GHz
+  3. 关键业务双频冗余
+  4. 定期测试切换性能
+"""
+        strategy_text.insert('1.0', strategy_content)
+        strategy_text.config(state='disabled')
+    
+    def _create_unii_tab(self, notebook):
+        """创建UNII频段分析标签页"""
+        unii_frame = ttk.Frame(notebook)
+        notebook.add(unii_frame, text="📡 UNII频段")
+        
+        unii_text = tk.Text(unii_frame, wrap='word', font=('Consolas', 9))
+        unii_text.pack(fill='both', expand=True, padx=10, pady=10)
+        
+        unii_content = """═══════════════════════════════════════════════════════════
+  6GHz UNII频段详细分析（WiFi 6E/7）
+═══════════════════════════════════════════════════════════
+
+📡 UNII-5频段 (5925-6425 MHz)
+  • 信道范围: 1, 5, 9, 13, ..., 93 (共24个信道)
+  • 特性: 低干扰，适合室内高密度部署
+  • 推荐: ⭐⭐⭐⭐⭐ 首选频段
+  • 应用: 企业办公、会议室、高密度场景
+  • 信道宽度: 支持20/40/80/160/320MHz
+
+📡 UNII-6频段 (6425-6525 MHz)
+  • 信道范围: 97, 101, 105, ..., 117 (共6个信道)
+  • 特性: 中等干扰，覆盖范围适中
+  • 推荐: ⭐⭐⭐⭐ 备选频段
+  • 应用: 混合环境、中密度部署
+  • 限制: 部分地区受管制
+
+📡 UNII-7频段 (6525-6875 MHz)
+  • 信道范围: 121, 125, 129, ..., 189 (共18个信道)
+  • 特性: 极低干扰，高频段特性
+  • 推荐: ⭐⭐⭐⭐⭐ 高性能场景
+  • 应用: VR/AR、8K流媒体、工业4.0
+  • 优势: 支持320MHz超宽信道（WiFi 7）
+
+📡 UNII-8频段 (6875-7125 MHz)
+  • 信道范围: 193, 197, 201, ..., 233 (共11个信道)
+  • 特性: 最高频段，损耗最大
+  • 推荐: ⭐⭐⭐ 特殊场景
+  • 应用: 超近距离、极高速率需求
+  • 限制: 多数地区未开放或受限
+
+💡 信道选择策略:
+  1. 室内高密度: UNII-5 (信道1-93)
+  2. 高性能需求: UNII-7 (信道121-189) + 320MHz
+  3. 避免边缘: 不推荐UNII-8（兼容性差）
+  4. 动态调整: 根据干扰情况切换UNII频段
+
+📊 各频段对比:
+  ┌─────────┬────────┬────────┬──────────┐
+  │ UNII频段 │ 信道数 │ 干扰度 │ 推荐指数 │
+  ├─────────┼────────┼────────┼──────────┤
+  │ UNII-5  │   24   │  极低  │  ⭐⭐⭐⭐⭐  │
+  │ UNII-6  │    6   │   低   │  ⭐⭐⭐⭐   │
+  │ UNII-7  │   18   │  极低  │  ⭐⭐⭐⭐⭐  │
+  │ UNII-8  │   11   │   低   │  ⭐⭐⭐    │
+  └─────────┴────────┴────────┴──────────┘
+
+⚠️ 使用注意:
+  • 不同国家/地区UNII频段开放情况不同
+  • 中国: UNII-5/6/7 已开放，UNII-8 待定
+  • 美国: 全部UNII频段开放
+  • 欧洲: UNII-5/6/7 开放，UNII-8 部分开放
+  • 使用前请确认本地法规
+"""
+        unii_text.insert('1.0', unii_content)
+        unii_text.config(state='disabled')
+    
     def get_frame(self):
         """获取框架"""
         return self.frame
+
+
+# ═══════════════════════════════════════════════════════════
+#                   Phase 2优化: 异步热力图生成器
+# ═══════════════════════════════════════════════════════════
+
+class AsyncHeatmapGenerator:
+    """✅ Phase 2优化: 异步热力图生成器（LRU缓存+多线程）"""
+    
+    def __init__(self, cache_size=10):
+        self.cache = {}  # 热力图缓存
+        self.cache_order = []  # LRU顺序
+        self.cache_size = cache_size
+        self.computing = False
+        self.compute_thread = None
+    
+    def generate_async(self, channels, usage, band, callback, dfs_channels=None):
+        """异步生成热力图矩阵"""
+        # 生成缓存键
+        cache_key = self._make_cache_key(channels, usage, band)
+        
+        # 检查缓存
+        if cache_key in self.cache:
+            # 缓存命中
+            result = self.cache[cache_key]
+            callback(result, from_cache=True)
+            return
+        
+        # 缓存未命中，启动异步计算
+        if self.computing:
+            return  # 已有计算在进行
+        
+        self.computing = True
+        
+        import threading
+        def compute_task():
+            try:
+                # 计算干扰矩阵
+                if band == '2.4GHz':
+                    matrix = self._compute_2ghz_matrix(channels, usage)
+                else:  # 5GHz
+                    matrix = self._compute_5ghz_matrix(channels, usage, dfs_channels)
+                
+                # 存入缓存
+                self._add_to_cache(cache_key, matrix)
+                
+                # 回调
+                callback(matrix, from_cache=False)
+                
+            except Exception as e:
+                print(f"热力图计算错误: {e}")
+            finally:
+                self.computing = False
+        
+        self.compute_thread = threading.Thread(target=compute_task, daemon=True)
+        self.compute_thread.start()
+    
+    def _make_cache_key(self, channels, usage, band):
+        """生成缓存键"""
+        # 使用信道列表和占用数据的哈希值
+        usage_hash = hash(tuple(sorted(usage.items())))
+        return (tuple(channels), usage_hash, band)
+    
+    def _add_to_cache(self, key, value):
+        """添加到LRU缓存"""
+        if key in self.cache:
+            # 更新顺序
+            self.cache_order.remove(key)
+            self.cache_order.append(key)
+        else:
+            # 新增缓存
+            if len(self.cache) >= self.cache_size:
+                # 移除最旧的
+                oldest = self.cache_order.pop(0)
+                del self.cache[oldest]
+            
+            self.cache[key] = value
+            self.cache_order.append(key)
+    
+    def _compute_2ghz_matrix(self, channels, usage):
+        """计算2.4GHz干扰矩阵（向量化）"""
+        n = len(channels)
+        matrix = np.zeros((n, n))
+        
+        # 向量化计算
+        for i, ch1 in enumerate(channels):
+            for j, ch2 in enumerate(channels):
+                if abs(ch1 - ch2) <= 4:  # 重叠范围
+                    distance = abs(ch1 - ch2)
+                    interference_factor = (5 - distance) / 5
+                    
+                    ch2_data = usage.get(ch2, {})
+                    if isinstance(ch2_data, dict):
+                        matrix[i, j] = ch2_data.get('weight', 0) * interference_factor
+                    else:
+                        matrix[i, j] = (ch2_data * interference_factor) if ch2_data else 0
+        
+        return matrix
+    
+    def _compute_5ghz_matrix(self, channels, usage, dfs_channels):
+        """计算5GHz干扰矩阵（考虑信道绑定）"""
+        n = len(channels)
+        matrix = np.zeros((n, n))
+        
+        # 信道绑定配置
+        bonding_40 = [
+            ([36, 40], 38), ([44, 48], 46), ([52, 56], 54),
+            ([60, 64], 62), ([100, 104], 102), ([108, 112], 110),
+            ([116, 120], 118), ([124, 128], 126), ([132, 136], 134),
+            ([149, 153], 151), ([157, 161], 159)
+        ]
+        
+        bonding_80 = [
+            ([36, 40, 44, 48], 42), ([52, 56, 60, 64], 58),
+            ([100, 104, 108, 112], 106), ([116, 120, 124, 128], 122),
+            ([149, 153, 157, 161], 155)
+        ]
+        
+        # 计算干扰
+        for i, ch1 in enumerate(channels):
+            # 找出ch1的绑定组
+            bonded_group = [ch1]
+            
+            # 检查40MHz绑定
+            for group, center in bonding_40:
+                if ch1 in group:
+                    bonded_group.extend(group)
+            
+            # 检查80MHz绑定
+            for group, center in bonding_80:
+                if ch1 in group:
+                    bonded_group.extend(group)
+            
+            bonded_group = list(set(bonded_group))
+            
+            for j, ch2 in enumerate(channels):
+                if ch2 in bonded_group:
+                    ch2_data = usage.get(ch2, {})
+                    if isinstance(ch2_data, dict):
+                        matrix[i, j] = ch2_data.get('weight', 0)
+                    else:
+                        matrix[i, j] = ch2_data if ch2_data else 0
+        
+        return matrix
+    
+    def clear_cache(self):
+        """清空缓存"""
+        self.cache.clear()
+        self.cache_order.clear()

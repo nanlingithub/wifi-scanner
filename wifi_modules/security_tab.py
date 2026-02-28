@@ -6,6 +6,7 @@ WiFi安全检测标签页（专业版）
 import tkinter as tk
 from tkinter import ttk, scrolledtext, messagebox
 from datetime import datetime
+import threading
 
 from .theme import ModernTheme, ModernButton, ModernCard, StatusBadge, create_section_title
 from .security import (
@@ -89,7 +90,19 @@ class SecurityTab:
         self.spoof_tree = self._create_result_tree(spoof_frame,
                                                     ["SSID1", "SSID2", "相似度", "警告", "严重度"])
         
-        # 6. 风险评分
+        # 6. PMF检测（新增）
+        pmf_frame = ttk.Frame(notebook)
+        notebook.add(pmf_frame, text="🛡️ PMF防护")
+        self.pmf_tree = self._create_result_tree(pmf_frame,
+                                                  ["SSID", "BSSID", "PMF状态", "风险等级", "建议"])
+        
+        # 7. KRACK漏洞（新增）
+        krack_frame = ttk.Frame(notebook)
+        notebook.add(krack_frame, text="🔴 KRACK")
+        self.krack_tree = self._create_result_tree(krack_frame,
+                                                    ["SSID", "BSSID", "CVE数量", "CVSS评分", "状态"])
+        
+        # 8. 风险评分
         score_frame = ttk.Frame(notebook)
         notebook.add(score_frame, text="📊 风险评分")
         self.score_text = scrolledtext.ScrolledText(score_frame, 
@@ -97,7 +110,7 @@ class SecurityTab:
                                                      padx=10, pady=10)
         self.score_text.pack(fill='both', expand=True, padx=5, pady=5)
         
-        # 7. DNS检测
+        # 9. DNS检测
         dns_frame = ttk.Frame(notebook)
         notebook.add(dns_frame, text="🌐 DNS检测")
         self.dns_text = scrolledtext.ScrolledText(dns_frame, 
@@ -131,11 +144,49 @@ class SecurityTab:
         return tree
     
     def _security_scan(self):
-        """执行全面安全扫描"""
+        """执行全面安全扫描 - 异步版本"""
+        # 禁用按钮防止重复点击
+        for child in self.frame.winfo_children():
+            if isinstance(child, ttk.Frame):
+                for btn in child.winfo_children():
+                    if isinstance(btn, (ttk.Button, tk.Button)):
+                        try:
+                            btn.config(state='disabled')
+                        except:
+                            pass
+        
+        # 显示进度提示
+        self.stats_label.config(text="⏳ 正在扫描中，请稍候...")
+        
+        def scan_worker():
+            try:
+                self._security_scan_worker()
+            except Exception as e:
+                self.frame.after(0, lambda: messagebox.showerror("错误", f"扫描失败: {str(e)}"))
+            finally:
+                # 恢复按钮状态
+                def restore_buttons():
+                    for child in self.frame.winfo_children():
+                        if isinstance(child, ttk.Frame):
+                            for btn in child.winfo_children():
+                                if isinstance(btn, (ttk.Button, tk.Button)):
+                                    try:
+                                        btn.config(state='normal')
+                                    except:
+                                        pass
+                self.frame.after(0, restore_buttons)
+        
+        # 使用守护线程执行扫描
+        threading.Thread(target=scan_worker, daemon=True).start()
+    
+    def _security_scan_worker(self):
+        """安全扫描工作线程"""
+        # 清空结果
+        self.frame.after(0, self._clear_all_trees)
         try:
             # 清空之前的结果
             for tree in [self.open_tree, self.weak_tree, self.wps_tree, 
-                        self.evil_tree, self.spoof_tree]:
+                        self.evil_tree, self.spoof_tree, self.pmf_tree, self.krack_tree]:
                 tree.delete(*tree.get_children())
             
             # 扫描网络
@@ -145,18 +196,15 @@ class SecurityTab:
             open_networks = []
             weak_encryption = []
             wps_vulnerabilities = []
+            pmf_issues = []  # 新增：PMF防护问题
+            krack_vulnerabilities = []  # 新增：KRACK漏洞
             
             for network in networks:
                 ssid = network.get('ssid', 'N/A')
                 bssid = network.get('bssid', 'N/A')
                 auth = network.get('authentication', 'N/A')
-                signal = network.get('signal', -100)
-                # 修复：确保signal是整数类型
-                if isinstance(signal, str):
-                    import re
-                    match = re.search(r'-?\d+', signal)
-                    signal = int(match.group()) if match else -100
                 
+                # 修复：从signal_percent获取信号强度并转换为dBm
                 signal_percent = network.get('signal_percent', 0)
                 # 修复：确保signal_percent是整数类型（增强安全性）
                 try:
@@ -170,19 +218,84 @@ class SecurityTab:
                 except (ValueError, AttributeError) as e:
                     signal_percent = 0  # 转换失败时默认为0
                 
+                # 将百分比转换为dBm（公式：dBm ≈ (percent / 2) - 100）
+                if signal_percent > 0:
+                    signal_dbm = int((signal_percent / 2) - 100)
+                else:
+                    signal_dbm = -100
+                
                 channel = network.get('channel', 'N/A')
                 
                 # 1. 检测开放网络
                 if auth.lower() in ['open', '开放']:
                     risk = "高" if signal_percent > 50 else "中"
-                    open_networks.append((ssid, bssid, f"{signal}dBm", channel, risk))
+                    open_networks.append((ssid, bssid, f"{signal_dbm}dBm", channel, risk))
                 
-                # 2. 加密详细分析
+                # 2. 加密详细分析（增强：包含PMF和KRACK检测）
                 enc_analysis = self.vulnerability_detector.analyze_encryption_detail(network)
                 
+                # 2.1 PMF检测
+                pmf_result = self.vulnerability_detector.check_pmf_support(network)
+                
+                # 2.2 KRACK漏洞检测
+                krack_result = self.vulnerability_detector.check_krack_vulnerability_detailed(network)
+                
+                # 收集PMF问题网络
+                if pmf_result['risk_level'] in ['MEDIUM', 'HIGH', 'CRITICAL']:
+                    pmf_status = "强制" if pmf_result['pmf_required'] else "可选" if pmf_result['pmf_capable'] else "不支持"
+                    risk_emoji = {
+                        'LOW': '✅',
+                        'MEDIUM': '🟡',
+                        'HIGH': '🟠',
+                        'CRITICAL': '🔴'
+                    }.get(pmf_result['risk_level'], '⚪')
+                    
+                    recommendation = "启用PMF" if not pmf_result['pmf_capable'] else "已启用PMF" if pmf_result['pmf_required'] else "建议启用PMF"
+                    pmf_issues.append((
+                        ssid, bssid, pmf_status,
+                        f"{risk_emoji} {pmf_result['risk_level']}",
+                        recommendation
+                    ))
+                
+                # 收集KRACK漏洞网络
+                if krack_result['vulnerable']:
+                    cve_count = len(krack_result['cve_list'])
+                    cvss_score = krack_result['cvss_score']
+                    status = "🔴 脆弱" if cvss_score >= 8.0 else "🟡 中危"
+                    krack_vulnerabilities.append((
+                        ssid, bssid,
+                        f"{cve_count}个CVE",
+                        f"{cvss_score} (CRITICAL)",
+                        status
+                    ))
+                
+                # 合并安全评估
+                combined_risk = "低"
                 if enc_analysis['security_level'] < 70:
-                    risk = "高" if enc_analysis['security_level'] < 40 else "中"
-                    weak_encryption.append((ssid, bssid, auth, f"{signal}dBm", risk))
+                    combined_risk = "高" if enc_analysis['security_level'] < 40 else "中"
+                
+                # 提升KRACK漏洞网络的风险等级
+                if krack_result['vulnerable']:
+                    combined_risk = "高"
+                
+                # 提升未启用PMF的WPA2网络风险等级
+                if pmf_result['risk_level'] in ['HIGH', 'CRITICAL']:
+                    if combined_risk == "低":
+                        combined_risk = "中"
+                
+                # 添加到弱加密列表（显示综合风险）
+                if enc_analysis['security_level'] < 70 or krack_result['vulnerable'] or pmf_result['risk_level'] in ['HIGH', 'CRITICAL']:
+                    # 构建风险原因
+                    risk_reasons = []
+                    if enc_analysis['security_level'] < 40:
+                        risk_reasons.append("弱加密")
+                    if krack_result['vulnerable']:
+                        risk_reasons.append("KRACK")
+                    if pmf_result['risk_level'] == 'CRITICAL':
+                        risk_reasons.append("无PMF")
+                    
+                    risk_detail = f"{combined_risk}({','.join(risk_reasons)})" if risk_reasons else combined_risk
+                    weak_encryption.append((ssid, bssid, auth, f"{signal_dbm}dBm", risk_detail))
                 
                 # 3. WPS漏洞检测
                 wps_result = self.vulnerability_detector.check_wps_vulnerability(network)
@@ -216,86 +329,146 @@ class SecurityTab:
             except Exception as e:
                 print(f"风险评分失败: {e}")
             
-            # 显示结果
-            for data in open_networks:
-                self.open_tree.insert('', 'end', values=data)
+            # 显示结果（使用after确保在主线程更新UI）
+            def update_ui():
+                for data in open_networks:
+                    self.open_tree.insert('', 'end', values=data)
+                
+                for data in weak_encryption:
+                    self.weak_tree.insert('', 'end', values=data)
+                
+                for data in wps_vulnerabilities:
+                    self.wps_tree.insert('', 'end', values=data)
+                
+                # 新增：显示PMF检测结果
+                for data in pmf_issues:
+                    self.pmf_tree.insert('', 'end', values=data)
+                
+                # 新增：显示KRACK检测结果
+                for data in krack_vulnerabilities:
+                    self.krack_tree.insert('', 'end', values=data)
+                
+                for evil in evil_twins:
+                    self.evil_tree.insert('', 'end', values=(
+                        evil['ssid'], evil['bssid'],
+                        ', '.join(evil['reasons'][:2]),  # 前2个原因
+                        f"{evil['confidence']}%",
+                        evil['recommendation'][:20] + '...'
+                    ))
+                
+                for spoof in ssid_spoofing:
+                    self.spoof_tree.insert('', 'end', values=(
+                        spoof['ssid1'], spoof['ssid2'],
+                        f"{spoof['similarity']}%",
+                        spoof['warning'][:30] + '...',
+                        spoof['severity']
+                    ))
+                
+                # 更新统计
+                stats = f"扫描完成: {len(networks)}个网络 | "
+                stats += f"开放: {len(open_networks)} | "
+                stats += f"弱加密: {len(weak_encryption)} | "
+                stats += f"WPS漏洞: {len(wps_vulnerabilities)} | "
+                stats += f"PMF问题: {len(pmf_issues)} | "
+                stats += f"KRACK: {len(krack_vulnerabilities)} | "
+                stats += f"Evil Twin: {len(evil_twins)} | "
+                stats += f"SSID欺骗: {len(ssid_spoofing)}"
+                
+                self.stats_label.config(text=stats)
+                
+                # 保存结果
+                self.scan_results = {
+                    'total': len(networks),
+                    'networks': networks,
+                    'open': open_networks,
+                    'weak': weak_encryption,
+                    'wps': wps_vulnerabilities,
+                    'pmf': pmf_issues,  # 新增
+                    'krack': krack_vulnerabilities,  # 新增
+                    'evil_twin': evil_twins,
+                    'ssid_spoof': ssid_spoofing,
+                    'dns': dns_result,
+                    'risk_score': risk_score_result
+                }
+                
+                # 生成扫描摘要
+                dns_status = "正常"
+                if dns_result and dns_result.get('hijacked'):
+                    dns_status = f"⚠️检测到{len(dns_result.get('hijacked_domains', []))}个异常"
+                
+                # 风险评分摘要
+                risk_summary = "未评分"
+                if risk_score_result and risk_score_result.get('env_score'):
+                    env_score = risk_score_result['env_score']
+                    risk_summary = f"{env_score['rating_emoji']} {env_score['score']}/100 ({env_score['rating']})"
+                
+                messagebox.showinfo("完成", 
+                                  f"安全扫描完成\n"
+                                  f"发现 {len(wps_vulnerabilities)} 个WPS漏洞\n"
+                                  f"发现 {len(krack_vulnerabilities)} 个KRACK漏洞\n"
+                                  f"发现 {len(pmf_issues)} 个PMF防护问题\n"
+                                  f"发现 {len(evil_twins)} 个可疑Evil Twin\n"
+                                  f"DNS状态: {dns_status}\n"
+                                  f"环境风险: {risk_summary}")
             
-            for data in weak_encryption:
-                self.weak_tree.insert('', 'end', values=data)
-            
-            for data in wps_vulnerabilities:
-                self.wps_tree.insert('', 'end', values=data)
-            
-            for evil in evil_twins:
-                self.evil_tree.insert('', 'end', values=(
-                    evil['ssid'], evil['bssid'],
-                    ', '.join(evil['reasons'][:2]),  # 前2个原因
-                    f"{evil['confidence']}%",
-                    evil['recommendation'][:20] + '...'
-                ))
-            
-            for spoof in ssid_spoofing:
-                self.spoof_tree.insert('', 'end', values=(
-                    spoof['ssid1'], spoof['ssid2'],
-                    f"{spoof['similarity']}%",
-                    spoof['warning'][:30] + '...',
-                    spoof['severity']
-                ))
-            
-            # 更新统计
-            stats = f"扫描完成: {len(networks)}个网络 | "
-            stats += f"开放: {len(open_networks)} | "
-            stats += f"弱加密: {len(weak_encryption)} | "
-            stats += f"WPS漏洞: {len(wps_vulnerabilities)} | "
-            stats += f"Evil Twin: {len(evil_twins)} | "
-            stats += f"SSID欺骗: {len(ssid_spoofing)}"
-            
-            self.stats_label.config(text=stats)
-            
-            # 保存结果
-            self.scan_results = {
-                'total': len(networks),
-                'networks': networks,
-                'open': open_networks,
-                'weak': weak_encryption,
-                'wps': wps_vulnerabilities,
-                'evil_twin': evil_twins,
-                'ssid_spoof': ssid_spoofing,
-                'dns': dns_result,  # 添加DNS检测结果
-                'risk_score': risk_score_result  # 添加风险评分结果
-            }
-            
-            # 生成扫描摘要
-            dns_status = "正常"
-            if dns_result and dns_result.get('hijacked'):
-                dns_status = f"⚠️检测到{len(dns_result.get('hijacked_domains', []))}个异常"
-            
-            # 风险评分摘要
-            risk_summary = "未评分"
-            if risk_score_result and risk_score_result.get('env_score'):
-                env_score = risk_score_result['env_score']
-                risk_summary = f"{env_score['rating_emoji']} {env_score['score']}/100 ({env_score['rating']})"
-            
-            messagebox.showinfo("完成", 
-                              f"安全扫描完成\n"
-                              f"发现 {len(wps_vulnerabilities)} 个WPS漏洞\n"
-                              f"发现 {len(evil_twins)} 个可疑Evil Twin\n"
-                              f"DNS状态: {dns_status}\n"
-                              f"环境风险: {risk_summary}")
+            self.frame.after(0, update_ui)
 
             
         except Exception as e:
-            messagebox.showerror("错误", f"扫描失败: {str(e)}")
+            def show_error():
+                messagebox.showerror("错误", f"扫描失败: {str(e)}")
+            self.frame.after(0, show_error)
+    
+    def _clear_all_trees(self):
+        """清空所有树形控件"""
+        for tree in [self.open_tree, self.weak_tree, self.wps_tree, 
+                    self.evil_tree, self.spoof_tree, self.pmf_tree, self.krack_tree]:
+            tree.delete(*tree.get_children())
     
     def _wps_scan(self):
-        """WPS专项扫描"""
+        """WPS专项扫描 - 异步版本"""
+        # 禁用按钮防止重复点击
+        for child in self.frame.winfo_children():
+            if isinstance(child, ttk.Frame):
+                for btn in child.winfo_children():
+                    if isinstance(btn, (ttk.Button, tk.Button)):
+                        try:
+                            btn.config(state='disabled')
+                        except:
+                            pass
+        
+        # 显示进度提示
+        self.stats_label.config(text="⏳ 正在扫描WPS漏洞，请稍候...")
+        
+        def scan_worker():
+            try:
+                self._wps_scan_worker()
+            except Exception as e:
+                self.frame.after(0, lambda: messagebox.showerror("错误", f"WPS扫描失败: {str(e)}"))
+            finally:
+                # 恢复按钮状态
+                def restore_buttons():
+                    for child in self.frame.winfo_children():
+                        if isinstance(child, ttk.Frame):
+                            for btn in child.winfo_children():
+                                if isinstance(btn, (ttk.Button, tk.Button)):
+                                    try:
+                                        btn.config(state='normal')
+                                    except:
+                                        pass
+                self.frame.after(0, restore_buttons)
+        
+        # 使用守护线程执行扫描
+        threading.Thread(target=scan_worker, daemon=True).start()
+    
+    def _wps_scan_worker(self):
+        """WPS扫描工作线程"""
         try:
             networks = self.wifi_analyzer.scan_wifi_networks(force_refresh=True)
             
-            self.wps_tree.delete(*self.wps_tree.get_children())
-            
             wps_count = 0
             vulnerable_count = 0
+            results = []
             
             for network in networks:
                 wps_result = self.vulnerability_detector.check_wps_vulnerability(network)
@@ -305,7 +478,7 @@ class SecurityTab:
                     
                     if wps_result['vulnerable']:
                         vulnerable_count += 1
-                        self.wps_tree.insert('', 'end', values=(
+                        results.append((
                             network.get('ssid', 'N/A'),
                             network.get('bssid', 'N/A'),
                             wps_result['vulnerability_type'],
@@ -313,12 +486,22 @@ class SecurityTab:
                             wps_result['exploit_time']
                         ))
             
-            messagebox.showinfo("WPS扫描完成", 
-                              f"检测到 {wps_count} 个启用WPS的网络\n"
-                              f"其中 {vulnerable_count} 个存在已知漏洞")
+            # 使用after在主线程更新UI
+            def update_ui():
+                self.wps_tree.delete(*self.wps_tree.get_children())
+                for data in results:
+                    self.wps_tree.insert('', 'end', values=data)
+                
+                messagebox.showinfo("WPS扫描完成", 
+                                  f"检测到 {wps_count} 个启用WPS的网络\n"
+                                  f"其中 {vulnerable_count} 个存在已知漏洞")
+            
+            self.frame.after(0, update_ui)
             
         except Exception as e:
-            messagebox.showerror("错误", f"WPS扫描失败: {str(e)}")
+            def show_error():
+                messagebox.showerror("错误", f"WPS扫描失败: {str(e)}")
+            self.frame.after(0, show_error)
     
     def _dns_check(self):
         """DNS劫持检测"""

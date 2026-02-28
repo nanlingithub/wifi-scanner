@@ -2,6 +2,7 @@
 部署优化标签页
 功能：平面图上传、点击添加测量点、覆盖分析、AP推荐
 v2.0优化：信号传播模型、智能AP推荐、空间覆盖率分析
+v2.1: 使用统一可视化工具
 """
 
 import tkinter as tk
@@ -12,6 +13,9 @@ import json
 from datetime import datetime
 
 from .theme import ModernTheme, ModernButton, ModernCard, create_section_title
+from .visualization_utils import HeatmapVisualizer
+
+# 优化算法导入（P0）
 
 # 优化算法导入（P0）
 try:
@@ -49,6 +53,15 @@ class SignalPropagationModel:
         '木门': 3,
         '玻璃门': 2,
         '玻璃': 2
+    }
+    
+    # ✅ 优化: 环境因子配置
+    ENVIRONMENT_FACTORS = {
+        'office': 1.2,     # 办公室: 隔断多
+        'home': 1.0,       # 家庭: 标准
+        'factory': 1.5,    # 工厂: 金属设备多
+        'hospital': 1.1,   # 医院: 轻质隔墙
+        'school': 1.3      # 学校: 人群密集
     }
     
     @staticmethod
@@ -111,6 +124,64 @@ class SignalPropagationModel:
         def ccw(A, B, C):
             return (C[1]-A[1]) * (B[0]-A[0]) > (B[1]-A[1]) * (C[0]-A[0])
         return ccw(p1, p3, p4) != ccw(p2, p3, p4) and ccw(p1, p2, p3) != ccw(p1, p2, p4)
+
+
+class SignalPropagationModelEnhanced(SignalPropagationModel):
+    """✅ 优化: 增强版信号传播模型（多径效应+环境因子+天线增益）"""
+    
+    @staticmethod
+    def calculate_path_loss_enhanced(ap_pos, test_pos, obstacles=None, frequency_ghz=2.4, environment='office'):
+        """✅ 优化: 增强路径损耗模型"""
+        distance = np.linalg.norm(np.array(ap_pos) - np.array(test_pos))
+        distance_m = distance / 100  # 像素转米
+        
+        # 1. 基础FSPL
+        path_loss = SignalPropagationModelEnhanced.calculate_fspl(distance_m, frequency_ghz)
+        
+        # 2. ✅ 新增: 多径衰落余量 (距离>10米时生效)
+        if distance_m > 10:
+            multipath_margin = 5 * np.log10(distance_m)  # Hata模型修正
+            path_loss += multipath_margin
+        
+        # 3. 障碍物衰减 (保留原有逻辑)
+        obstacle_loss = 0
+        if obstacles:
+            for obstacle in obstacles:
+                if obstacle['type'] == 'wall':
+                    if SignalPropagationModelEnhanced._line_intersects_obstacle(ap_pos, test_pos, obstacle):
+                        material = obstacle.get('material', '砖墙')
+                        obstacle_loss += SignalPropagationModelEnhanced.WALL_ATTENUATION.get(material, 10)
+        
+        # 4. ✅ 新增: 环境因子
+        environment_factor = SignalPropagationModelEnhanced.ENVIRONMENT_FACTORS.get(environment, 1.0)
+        
+        total_loss = path_loss + obstacle_loss * environment_factor
+        
+        # 5. ✅ 新增: 天线增益补偿
+        antenna_gain = 2.0  # dBi (标准商用AP)
+        
+        return total_loss - antenna_gain
+    
+    @staticmethod
+    def predict_signal_enhanced(tx_power_dbm, ap_pos, test_pos, obstacles=None, frequency_ghz=2.4, environment='office'):
+        """✅ 优化: 增强信号预测（含置信区间）"""
+        path_loss = SignalPropagationModelEnhanced.calculate_path_loss_enhanced(
+            ap_pos, test_pos, obstacles, frequency_ghz, environment
+        )
+        
+        # ✅ 新增: 衰落余量 (10dB - 保证90%可靠性)
+        fade_margin = 10.0
+        
+        received_power = tx_power_dbm - path_loss - fade_margin
+        
+        # ✅ 新增: 信号强度置信区间
+        confidence_range = {
+            'best_case': received_power + 5,
+            'typical': received_power,
+            'worst_case': received_power - 5
+        }
+        
+        return received_power, confidence_range
 
 
 class DeploymentTab:
@@ -701,39 +772,85 @@ class DeploymentTab:
         messagebox.showinfo("AP部署推荐", recommendation)
     
     def _determine_optimal_aps(self, weak_points):
-        """确定最优AP数量（肘部法则）"""
-        if len(weak_points) < 3:
-            return 1
+        """✅ 优化: 智能AP数量确定（覆盖半径+场景参数+弱信号验证）"""
+        import math
         
-        max_aps = min(5, len(weak_points) // 3)  # 最多5个AP
-        if max_aps <= 1:
-            return 1
+        # 1. ✅ 计算实际面积
+        area_m2 = (self.canvas_width / 100) * (self.canvas_height / 100)
         
-        # 简化版：根据弱信号点数量
-        if len(weak_points) < 10:
-            return 1
-        elif len(weak_points) < 20:
-            return 2
-        else:
-            return 3
+        # 2. ✅ 场景参数（默认office）
+        scenario = getattr(self, 'deployment_scenario', 'office')
+        scenario_params = {
+            'office': {
+                'coverage_radius': 15,   # 米
+                'overlap_factor': 1.3,   # 30%冗余
+                'max_clients_per_ap': 30
+            },
+            'school': {
+                'coverage_radius': 12,
+                'overlap_factor': 1.5,   # 50%冗余
+                'max_clients_per_ap': 50
+            },
+            'hospital': {
+                'coverage_radius': 10,
+                'overlap_factor': 1.8,   # 80%冗余
+                'max_clients_per_ap': 20
+            },
+            'factory': {
+                'coverage_radius': 20,
+                'overlap_factor': 1.2,
+                'max_clients_per_ap': 15
+            },
+            'home': {
+                'coverage_radius': 15,
+                'overlap_factor': 1.1,
+                'max_clients_per_ap': 10
+            }
+        }
+        params = scenario_params.get(scenario, scenario_params['office'])
+        
+        # 3. ✅ 基于覆盖半径计算
+        coverage_area_per_ap = math.pi * params['coverage_radius']**2
+        num_aps_by_area = math.ceil(area_m2 / coverage_area_per_ap * params['overlap_factor'])
+        
+        # 4. ✅ 基于弱信号点验证
+        if len(weak_points) > 0:
+            weak_density = len(weak_points) / area_m2  # 点/m²
+            if weak_density > 0.1:  # 高密度弱信号
+                num_aps_by_area = max(num_aps_by_area, num_aps_by_area + 1)
+        
+        # 5. ✅ 合理上下限
+        max_aps = max(5, int(area_m2 / 50))  # 动态上限
+        num_aps = max(2, min(num_aps_by_area, max_aps))
+        
+        return num_aps
     
     def _recommend_ap_optimized(self, weak_points, num_aps):
-        """K-Means聚类优化AP位置（P0-1）"""
+        """K-Means聚类优化AP位置（P0-1）✅ 增强版优先"""
         try:
             # 1. K-Means聚类
             kmeans = KMeans(n_clusters=num_aps, random_state=42, n_init=10)
             kmeans.fit(weak_points)
             initial_positions = kmeans.cluster_centers_
             
-            # 2. 微调优化（差分进化）
+            # 2. ✅ 优先使用增强版微调优化
             if len(self.measurement_points) >= 10:
-                optimized_positions = self._optimize_ap_positions(initial_positions)
+                scenario = getattr(self, 'deployment_scenario', 'office')
+                try:
+                    # ✅ 尝试使用增强版优化
+                    optimized_positions, metrics = self._optimize_ap_positions_enhanced(initial_positions, scenario)
+                    print(f"✅ 使用增强优化: 得分{metrics.get('score', 0):.2f}, 收敛{metrics.get('convergence', False)}")
+                except Exception as e:
+                    # 降级到标准优化
+                    print(f"⚠️ 增强优化失败，降级到标准优化: {str(e)}")
+                    optimized_positions = self._optimize_ap_positions(initial_positions)
             else:
                 optimized_positions = initial_positions
             
             return optimized_positions
-        except Exception as e:  # P2修复: 指定异常类型
+        except Exception as e:
             # 降级：返回初始位置
+            print(f"❌ K-Means聚类失败: {str(e)}")
             return initial_positions if 'initial_positions' in locals() else [np.mean(weak_points, axis=0)]
     
     def _optimize_ap_positions(self, initial_positions):
@@ -844,6 +961,100 @@ class DeploymentTab:
                     return False
         return True
     
+    def _optimize_ap_positions_enhanced(self, initial_positions, scenario='office'):
+        """✅ 优化: 自适应差分进化优化（自适应参数+场景权重+局部精修）"""
+        try:
+            num_aps = len(initial_positions)
+            
+            # 1. ✅ 自适应参数
+            area_m2 = (self.canvas_width / 100) * (self.canvas_height / 100)
+            complexity = area_m2 * num_aps
+            
+            maxiter = max(100, min(300, int(complexity / 10)))
+            popsize = max(15, min(50, num_aps * 5))
+            timeout = 60 + int(area_m2 / 100) * 30
+            
+            # 2. ✅ 场景自适应权重
+            scenario_weights = {
+                'office': {'coverage': 0.55, 'interference': 0.20, 'cost': 0.15, 'validity': 0.10},
+                'school': {'coverage': 0.50, 'interference': 0.30, 'cost': 0.10, 'validity': 0.10},
+                'hospital': {'coverage': 0.70, 'interference': 0.15, 'cost': 0.05, 'validity': 0.10},
+                'factory': {'coverage': 0.60, 'interference': 0.10, 'cost': 0.20, 'validity': 0.10},
+                'home': {'coverage': 0.40, 'interference': 0.10, 'cost': 0.40, 'validity': 0.10}
+            }
+            weights = scenario_weights.get(scenario, scenario_weights['office'])
+            
+            def objective_enhanced(positions):
+                aps = positions.reshape(num_aps, 2)
+                
+                # ✅ 使用增强覆盖率计算
+                coverage_score, metrics = self._calculate_coverage_for_aps_enhanced(aps)
+                
+                # 同频干扰
+                interference = 0
+                for i in range(num_aps):
+                    for j in range(i+1, num_aps):
+                        dist = np.linalg.norm(aps[i] - aps[j])
+                        if dist > 0:
+                            interference += (200 / max(dist, 10))**2
+                
+                # 成本
+                cost = num_aps * 800
+                cost_penalty = cost / 1000
+                
+                # ✅ 增强约束检查
+                validity_penalty = 0
+                for ap in aps:
+                    if not self._check_ap_validity(ap):
+                        validity_penalty += 1000
+                    if ap[0] < 50 or ap[0] > self.canvas_width-50 or \
+                       ap[1] < 50 or ap[1] > self.canvas_height-50:
+                        validity_penalty += 500
+                
+                # ✅ 场景自适应权重
+                score = -(
+                    weights['coverage'] * coverage_score * 100 -
+                    weights['interference'] * interference -
+                    weights['cost'] * cost_penalty -
+                    weights['validity'] * validity_penalty
+                )
+                
+                return score
+            
+            # 3. ✅ 自适应差分进化
+            bounds = [(0, self.canvas_width), (0, self.canvas_height)] * num_aps
+            
+            import time
+            start_time = time.time()
+            
+            result = differential_evolution(
+                objective_enhanced, bounds,
+                maxiter=maxiter,
+                popsize=popsize,
+                workers=-1,
+                timeout=timeout,
+                strategy='best1bin',
+                mutation=(0.5, 1.5),
+                recombination=0.7,
+                atol=0.001,
+                updating='deferred',
+                polish=True
+            )
+            
+            elapsed = time.time() - start_time
+            print(f"✅ 优化完成: 迭代{maxiter}, 种群{popsize}, 耗时{elapsed:.1f}s, 得分{-result.fun:.2f}")
+            
+            return result.x.reshape(num_aps, 2), {
+                'score': -result.fun,
+                'iterations': result.nit,
+                'convergence': result.success,
+                'weights': weights
+            }
+            
+        except Exception as e:
+            print(f"❌ 增强优化失败: {str(e)}，降级到标准优化")
+            return self._optimize_ap_positions(initial_positions), {}
+    
     def _point_to_segment_distance(self, point, seg_start, seg_end):
         """计算点到线段的最短距离"""
         px, py = point
@@ -879,6 +1090,103 @@ class DeploymentTab:
                 covered += 1
         
         return covered / total if total > 0 else 0
+    
+    def _calculate_coverage_for_aps_enhanced(self, ap_positions, quality_threshold=-70):
+        """✅ 优化: 基于信号传播模型的精确覆盖率计算（蒙特卡洛采样+5级质量）"""
+        import random
+        
+        # 1. ✅ 自适应采样数量
+        area_m2 = (self.canvas_width / 100) * (self.canvas_height / 100)
+        target_density = 3  # 点/m²
+        num_samples = max(300, min(2000, int(area_m2 * target_density)))
+        
+        # 2. ✅ 分层采样 (70%均匀 + 30%重点)
+        uniform_samples = int(num_samples * 0.7)
+        focused_samples = int(num_samples * 0.3)
+        
+        sample_points = []
+        
+        # 2.1 均匀采样
+        for _ in range(uniform_samples):
+            x = random.random() * self.canvas_width
+            y = random.random() * self.canvas_height
+            sample_points.append((x, y))
+        
+        # 2.2 ✅ 重点采样弱信号区域
+        weak_points = [p for p in self.measurement_points if p['signal'] < 60]
+        for _ in range(focused_samples):
+            if len(weak_points) > 0:
+                center = random.choice(weak_points)
+                x = center['x'] + random.gauss(0, 50)
+                y = center['y'] + random.gauss(0, 50)
+                x = max(0, min(self.canvas_width, x))
+                y = max(0, min(self.canvas_height, y))
+                sample_points.append((x, y))
+            else:
+                x = random.random() * self.canvas_width
+                y = random.random() * self.canvas_height
+                sample_points.append((x, y))
+        
+        # 3. ✅ 信号预测（使用增强模型）
+        coverage_stats = {
+            'excellent': 0,  # >-50dBm
+            'good': 0,       # -50~-60dBm
+            'fair': 0,       # -60~-70dBm
+            'poor': 0,       # -70~-80dBm
+            'dead': 0        # <-80dBm
+        }
+        
+        scenario = getattr(self, 'deployment_scenario', 'office')
+        
+        for point in sample_points:
+            max_signal_dbm = -100  # 初始化为极弱信号
+            
+            for ap in ap_positions:
+                ap_pos = (ap[0], ap[1]) if isinstance(ap, (list, np.ndarray)) else (ap['x'], ap['y'])
+                
+                # 使用增强信号传播模型
+                signal_dbm, _ = SignalPropagationModelEnhanced.predict_signal_enhanced(
+                    tx_power_dbm=20,
+                    ap_pos=ap_pos,
+                    test_pos=point,
+                    obstacles=self.obstacles,
+                    frequency_ghz=2.4,
+                    environment=scenario
+                )
+                
+                max_signal_dbm = max(max_signal_dbm, signal_dbm)
+            
+            # 4. ✅ 分级统计
+            if max_signal_dbm > -50:
+                coverage_stats['excellent'] += 1
+            elif max_signal_dbm > -60:
+                coverage_stats['good'] += 1
+            elif max_signal_dbm > -70:
+                coverage_stats['fair'] += 1
+            elif max_signal_dbm > -80:
+                coverage_stats['poor'] += 1
+            else:
+                coverage_stats['dead'] += 1
+        
+        # 5. ✅ 综合评分 (加权平均)
+        total_samples = len(sample_points)
+        weighted_score = (
+            coverage_stats['excellent'] * 1.0 +
+            coverage_stats['good'] * 0.8 +
+            coverage_stats['fair'] * 0.5 +
+            coverage_stats['poor'] * 0.2
+        ) / total_samples
+        
+        # 6. ✅ 多级覆盖率指标
+        coverage_metrics = {
+            'excellent_rate': coverage_stats['excellent'] / total_samples,
+            'good_rate': (coverage_stats['excellent'] + coverage_stats['good']) / total_samples,
+            'acceptable_rate': (coverage_stats['excellent'] + coverage_stats['good'] + coverage_stats['fair']) / total_samples,
+            'total_coverage': (total_samples - coverage_stats['dead']) / total_samples,
+            'dead_zone_rate': coverage_stats['dead'] / total_samples
+        }
+        
+        return weighted_score, coverage_metrics
     
     def _predict_coverage_improvement(self, ap_positions):
         """预测覆盖率改善 (优化版 - 蒙特卡洛采样)"""
@@ -939,7 +1247,7 @@ class DeploymentTab:
             self.canvas.config(cursor='arrow')
     
     def _show_heatmap(self):
-        """显示信号热力图（P1-2）"""
+        """显示信号热力图（✅ v2.1: 使用统一可视化工具）"""
         if len(self.measurement_points) < 3:
             messagebox.showwarning("提示", "至少需要3个测量点才能生成热力图")
             return
@@ -947,7 +1255,6 @@ class DeploymentTab:
         try:
             import matplotlib.pyplot as plt
             from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
-            from matplotlib.colors import LinearSegmentedColormap
             
             # 创建热力图窗口
             heatmap_window = tk.Toplevel(self.frame)
@@ -955,57 +1262,38 @@ class DeploymentTab:
             heatmap_window.geometry("900x700")
             
             # 提取测量点数据
-            points = np.array([(p['x'], p['y']) for p in self.measurement_points])
-            signals = np.array([p['signal'] for p in self.measurement_points])
+            x = [p['x'] for p in self.measurement_points]
+            y = [p['y'] for p in self.measurement_points]
+            signals = [p['signal'] for p in self.measurement_points]
             
-            # 网格插值
-            xi = np.linspace(0, self.canvas_width, 200)
-            yi = np.linspace(0, self.canvas_height, 200)
-            xi, yi = np.meshgrid(xi, yi)
-            
-            if OPTIMIZATION_AVAILABLE:
-                # RBF插值
-                rbf = Rbf(points[:, 0], points[:, 1], signals, function='multiquadric', smooth=0.5)
-                zi = rbf(xi, yi)
-                zi = np.clip(zi, 0, 100)
-            else:
-                # 降级：最近邻
-                from scipy.interpolate import griddata
-                zi = griddata(points, signals, (xi, yi), method='nearest')
-            
-            # 绘制热力图
+            # ✅ v2.1: 使用统一可视化工具
             fig, ax = plt.subplots(figsize=(10, 7))
             
-            # 自定义颜色映射
-            colors = ['#e74c3c', '#e67e22', '#f39c12', '#3498db', '#2ecc71']
-            n_bins = 100
-            cmap = LinearSegmentedColormap.from_list('signal', colors, N=n_bins)
+            visualizer = HeatmapVisualizer(
+                interpolation='rbf' if OPTIMIZATION_AVAILABLE else 'nearest',
+                resolution='medium',
+                smooth=0.5
+            )
             
-            contour = ax.contourf(xi, yi, zi, levels=20, cmap=cmap, alpha=0.8)
-            cbar = fig.colorbar(contour, ax=ax)
-            cbar.set_label('信号强度 (%)', fontsize=12, fontproperties='Microsoft YaHei')
+            # 准备AP和障碍物数据
+            aps = [{'x': ap['x'], 'y': ap['y'], 'name': f"AP{i+1}"} 
+                   for i, ap in enumerate(self.recommended_aps)]
             
-            # 标记测量点
-            ax.scatter(points[:, 0], points[:, 1], c='white', s=50, 
-                      edgecolors='black', linewidth=1.5, marker='o', label='测量点')
+            visualizer.plot_heatmap(
+                x=x, y=y, values=signals,
+                ax=ax,
+                colormap='continuous',
+                show_points=True,
+                xlabel='X 坐标 (像素)',
+                ylabel='Y 坐标 (像素)',
+                title='WiFi信号强度热力图',
+                aps=aps,
+                obstacles=self.obstacles
+            )
             
-            # 标记推荐AP
-            for ap in self.recommended_aps:
-                ax.scatter(ap['x'], ap['y'], c='blue', s=300, 
-                          marker='*', edgecolors='white', linewidth=2, label='推荐AP')
-            
-            # 绘制障碍物
-            for obs in self.obstacles:
-                if obs['type'] == 'wall':
-                    start, end = obs['start'], obs['end']
-                    ax.plot([start[0], end[0]], [start[1], end[1]], 
-                           'k-', linewidth=4, label='墙体')
-            
+            # 反转Y轴以匹配画布坐标
+            ax.set_ylim(self.canvas_height, 0)
             ax.set_xlim(0, self.canvas_width)
-            ax.set_ylim(self.canvas_height, 0)  # 反转Y轴
-            ax.set_xlabel('X 坐标 (像素)', fontsize=12, fontproperties='Microsoft YaHei')
-            ax.set_ylabel('Y 坐标 (像素)', fontsize=12, fontproperties='Microsoft YaHei')
-            ax.set_title('WiFi信号强度热力图', fontsize=14, fontproperties='Microsoft YaHei', fontweight='bold')
             
             # 嵌入tkinter
             canvas_widget = FigureCanvasTkAgg(fig, master=heatmap_window)
