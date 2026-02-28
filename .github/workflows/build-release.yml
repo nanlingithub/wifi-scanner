@@ -1,0 +1,137 @@
+name: Build and Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:  # 允许手动触发
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v3
+      
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+      
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller
+      
+      - name: Build Windows executable
+        run: |
+          pyinstaller --clean --noconfirm wifi_professional.spec
+      
+      - name: Upload Windows artifact
+        uses: actions/upload-artifact@v3
+        with:
+          name: WiFiProfessional-Windows
+          path: dist/wifi_professional.exe
+          retention-days: 30
+
+  build-macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v3
+      
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+      
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller
+      
+      - name: Build macOS application
+        run: |
+          pyinstaller --clean --noconfirm build_macos.spec
+      
+      - name: Create DMG
+        run: |
+          # 创建临时目录
+          mkdir -p dist/dmg
+          cp -r "dist/WiFi Professional.app" dist/dmg/
+          
+          # 创建 DMG
+          hdiutil create -volname "WiFi Professional" \
+            -srcfolder dist/dmg \
+            -ov -format UDZO \
+            dist/WiFiProfessional-macOS.dmg
+      
+      - name: Upload macOS artifact
+        uses: actions/upload-artifact@v3
+        with:
+          name: WiFiProfessional-macOS
+          path: dist/WiFiProfessional-macOS.dmg
+          retention-days: 30
+
+  build-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+      
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y python3-tk
+      
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller
+      
+      - name: Build Linux executable
+        run: |
+          pyinstaller --clean --noconfirm wifi_professional.spec
+      
+      - name: Upload Linux artifact
+        uses: actions/upload-artifact@v3
+        with:
+          name: WiFiProfessional-Linux
+          path: dist/wifi_professional
+          retention-days: 30
+
+  create-release:
+    needs: [build-windows, build-macos, build-linux]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v3
+      
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: |
+            WiFiProfessional-Windows/wifi_professional.exe
+            WiFiProfessional-macOS/WiFiProfessional-macOS.dmg
+            WiFiProfessional-Linux/wifi_professional
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  build-summary:
+    needs: [build-windows, build-macos, build-linux]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Build Summary
+        run: |
+          echo "✅ All platform builds completed successfully!"
+          echo "- Windows: wifi_professional.exe"
+          echo "- macOS: WiFiProfessional-macOS.dmg"
+          echo "- Linux: wifi_professional"
