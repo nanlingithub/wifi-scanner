@@ -31,7 +31,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: WiFiProfessional-Windows
-          path: dist/wifi_professional.exe
+          path: dist/WiFi专业工具/WiFi专业工具.exe
           retention-days: 30
 
   build-macos:
@@ -58,7 +58,7 @@ jobs:
         run: |
           # 创建临时目录
           mkdir -p dist/dmg
-          cp -r "dist/WiFi Professional.app" dist/dmg/
+          cp -r "dist/WiFi专业工具.app" dist/dmg/
           
           # 创建 DMG
           hdiutil create -volname "WiFi Professional" \
@@ -102,7 +102,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: WiFiProfessional-Linux
-          path: dist/wifi_professional
+          path: dist/WiFi专业工具/WiFi专业工具
           retention-days: 30
 
   create-release:
@@ -117,9 +117,9 @@ jobs:
         uses: softprops/action-gh-release@v1
         with:
           files: |
-            WiFiProfessional-Windows/wifi_professional.exe
+            WiFiProfessional-Windows/WiFi专业工具.exe
             WiFiProfessional-macOS/WiFiProfessional-macOS.dmg
-            WiFiProfessional-Linux/wifi_professional
+            WiFiProfessional-Linux/WiFi专业工具
           draft: false
           prerelease: false
         env:
@@ -132,6 +132,6 @@ jobs:
       - name: Build Summary
         run: |
           echo "✅ All platform builds completed successfully!"
-          echo "- Windows: wifi_professional.exe"
+          echo "- Windows: WiFi专业工具.exe"
           echo "- macOS: WiFiProfessional-macOS.dmg"
-          echo "- Linux: wifi_professional"
+          echo "- Linux: WiFi专业工具"
