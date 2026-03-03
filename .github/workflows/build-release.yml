@@ -86,13 +86,36 @@ jobs:
         run: |
           pyinstaller wifi_professional_macos.spec --clean --noconfirm
 
+      - name: ✍️ Ad-hoc 代码签名（降低 Gatekeeper 拦截等级）
+        run: |
+          APP="dist/WiFi专业工具.app"
+
+          # 1. 移除构建过程中产生的隔离扩展属性
+          xattr -cr "$APP"
+
+          # 2. 对整个 .app bundle 做递归 ad-hoc 签名
+          #    identity="-" 表示本地自签，不需要 Apple Developer 账号
+          #    macOS 收到 ad-hoc 签名的 App 后，右键→打开时只需一次确认即可运行
+          codesign --deep \
+                   --force \
+                   --sign "-" \
+                   --options runtime \
+                   --timestamp=none \
+                   "$APP"
+
+          # 3. 验证签名
+          codesign --verify --verbose "$APP" \
+            && echo "✅ 代码签名验证通过" \
+            || echo "⚠️ 签名验证失败（非致命，继续打包）"
+
       - name: 📀 创建 DMG 安装包
         run: |
-          # 创建临时目录
-          mkdir -p dmg_staging
+          APP="dist/WiFi专业工具.app"
 
-          # 复制 .app 到临时目录
-          cp -R "dist/WiFi专业工具.app" "dmg_staging/"
+          # 创建包含 Applications 快捷方式的临时目录
+          mkdir -p dmg_staging
+          cp -R "$APP" "dmg_staging/"
+          ln -s /Applications "dmg_staging/Applications"
 
           # 创建 DMG（UDZO = zlib 压缩）
           hdiutil create \
@@ -187,13 +210,31 @@ jobs:
 
             ---
 
-            ### ⚠️ 注意事项
+            ### ⚠️ macOS 首次打开说明
 
-            - **Windows**：首次运行会请求 UAC 管理员权限，请点击"是"
-            - **macOS**：首次打开需在"系统偏好设置 → 安全性与隐私"中允许运行未签名应用
-              ```
-              在 Finder 中右键 App → 打开 → 仍然打开
-              ```
+            由于本应用未经 Apple 付费公证，macOS 首次打开会显示安全警告——**这是正常现象**，源码完全开放可自行审查。
+
+            **方法一：右键打开（最简单）**
+            1. 在 Finder 中找到「WiFi专业工具」
+            2. **右键（或 Control+单击）** → 选择「打开」
+            3. 弹出对话框中点击「打开」确认
+
+            **方法二：终端解除隔离（一劳永逸）**
+            ```bash
+            xattr -cr /Applications/WiFi专业工具.app
+            ```
+            之后可正常双击启动。
+
+            **方法三：系统设置允许**
+            1. 双击打开，出现警告后点击「完成」
+            2. 打开「系统设置 → 隐私与安全性」，滚动到底部
+            3. 点击「仍然打开」
+
+            ---
+
+            ### ⚠️ Windows 注意事项
+
+            - 首次运行会请求 UAC 管理员权限，请点击「是」（WiFi 扫描必须管理员权限）
 
           files: |
             artifacts/WiFi-Windows/WiFi专业工具-Windows-x64.zip
