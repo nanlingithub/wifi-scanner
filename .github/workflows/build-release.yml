@@ -111,22 +111,34 @@ jobs:
 
       - name: 📀 创建 DMG 安装包
         run: |
+          # 设置 UTF-8 locale，避免中文路径在 CI shell 环境下的编码问题
+          export LANG=en_US.UTF-8
+          export LC_ALL=en_US.UTF-8
+
           APP="dist/WiFi专业工具.app"
+
+          # 调试：确认 App Bundle 已生成并显示实际路径
+          echo "=== dist 目录内容 ==="
+          ls -la dist/
 
           # 创建包含 Applications 快捷方式的临时目录
           mkdir -p dmg_staging
           cp -R "$APP" "dmg_staging/"
           ln -s /Applications "dmg_staging/Applications"
 
-          # 创建 DMG（UDZO = zlib 压缩）
+          # 创建 DMG：hdiutil -o 参数使用 ASCII 文件名避免中文路径编码问题
+          # -volname 也用 ASCII（显示名称，非关键）
           hdiutil create \
             -srcfolder dmg_staging \
-            -volname "WiFi专业工具" \
+            -volname "WiFi Professional" \
             -format UDZO \
             -imagekey zlib-level=9 \
-            -o "WiFi专业工具-macOS.dmg"
+            -o "WiFiProfessional-macOS.dmg"
 
-          echo "DMG 大小: $(du -sh WiFi专业工具-macOS.dmg | cut -f1)"
+          # 重命名为最终中文名（artifact 上传路径需与此一致）
+          mv "WiFiProfessional-macOS.dmg" "WiFi专业工具-macOS.dmg"
+
+          echo "✅ DMG 大小: $(du -sh 'WiFi专业工具-macOS.dmg' | cut -f1)"
 
       - name: 📤 上传 macOS 产物
         uses: actions/upload-artifact@v4
