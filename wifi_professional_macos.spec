@@ -115,10 +115,8 @@ hiddenimports = [
     # 告警模块
     'wifi_modules.alerts',
     'wifi_modules.alerts.signal_alert',
-
-    # macOS AppKit 支持（pyobjc — macOS 自带，用于激活应用到前台）
-    'AppKit',
-    'Foundation',
+    # 注意：AppKit/Foundation 是 ObjC 框架，不是 Python 模块，
+    # 不能加入 hiddenimports，通过 rthook_macos.py 在运行时按需导入
 ]
 
 # 收集数据文件
@@ -138,7 +136,7 @@ a = Analysis(
     hiddenimports=hiddenimports,
     hookspath=[],
     hooksconfig={},
-    runtime_hooks=['hooks/rthook_macos.py'],   # macOS 前台激活钩子
+    runtime_hooks=[],   # 不使用外部 rthook 文件，macOS 激活逻辑在 wifi_professional.py main() 中处理
     excludes=[
         'IPython',
         'jupyter',

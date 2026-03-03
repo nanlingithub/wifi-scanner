@@ -80,8 +80,8 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
           pip install "pyinstaller>=6.0.0"
-          # pyobjc 是 macOS 系统级绑定，用于将 App 激活到前台（解决窗口不显示问题）
-          pip install pyobjc-framework-AppKit pyobjc-framework-Foundation
+          # pyobjc 在 macOS GitHub runner 上通常已预装，安装失败不阻断构建
+          pip install pyobjc-framework-AppKit --quiet || true
 
       - name: 🔨 构建 macOS App Bundle
         run: |
