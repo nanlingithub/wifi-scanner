@@ -115,6 +115,10 @@ hiddenimports = [
     # 告警模块
     'wifi_modules.alerts',
     'wifi_modules.alerts.signal_alert',
+
+    # macOS AppKit 支持（pyobjc — macOS 自带，用于激活应用到前台）
+    'AppKit',
+    'Foundation',
 ]
 
 # 收集数据文件
@@ -134,7 +138,7 @@ a = Analysis(
     hiddenimports=hiddenimports,
     hookspath=[],
     hooksconfig={},
-    runtime_hooks=[],
+    runtime_hooks=['hooks/rthook_macos.py'],   # macOS 前台激活钩子
     excludes=[
         'IPython',
         'jupyter',
@@ -190,13 +194,31 @@ app = BUNDLE(
     icon=None,
     bundle_identifier='com.nanling.wifi-professional',
     info_plist={
-        'CFBundleShortVersionString': '1.6.3',
-        'CFBundleVersion': '1.6.3',
+        # 版本信息
+        'CFBundleShortVersionString': '1.6.5',
+        'CFBundleVersion': '1.6.5',
         'CFBundleDisplayName': 'WiFi专业工具',
         'CFBundleName': 'WiFi专业工具',
+
+        # ★ 关键：告知 macOS 这是一个标准 GUI 应用，必须显示窗口
+        # 缺少此项时 macOS 可能把进程当后台服务，导致窗口不出现
+        'NSPrincipalClass': 'NSApplication',
+        'NSAppleScriptEnabled': False,
+
+        # 高 DPI 支持
         'NSHighResolutionCapable': True,
-        'NSRequiresAquaSystemAppearance': False,   # 支持深色模式
+
+        # False = 显示 Dock 图标、显示在 Mission Control 中（默认 GUI App 行为）
+        # True  = 隐藏 Dock 图标（后台 Agent 模式）—— 必须为 False
         'LSUIElement': False,
+
+        # 允许在低电量模式下正常运行
+        'NSSupportsAutomaticTermination': False,
+        'NSSupportsSuddenTermination': False,
+
+        # 深色模式兼容
+        'NSRequiresAquaSystemAppearance': False,
+
         'NSHumanReadableCopyright': 'Copyright © 2024 NL@China_SZ',
     },
 )

@@ -480,28 +480,53 @@ Copyright © 2026 {DEVELOPER}
 def main():
     """主函数"""
     import traceback
+    import platform
+
+    def _macos_activate(root):
+        """
+        macOS 专用：通过 osascript 把应用窗口激活到前台。
+        macOS 上 tkinter 的 focus_force/lift 只在应用内部有效，
+        必须通过 osascript 告知 WindowServer 把进程置为 frontmost。
+        """
+        import subprocess, os
+        try:
+            subprocess.Popen([
+                'osascript', '-e',
+                f'tell application "System Events" to set frontmost of '
+                f'first process whose unix id is {os.getpid()} to true'
+            ])
+        except Exception:
+            pass
+        # 同时用 tk 层面的 raise 确保窗口在最上面
+        root.lift()
+        root.focus_force()
 
     def _run():
         root = tk.Tk()
         app = WiFiProfessionalApp(root)
-        # 确保窗口可见并置顶（pythonw.exe 下窗口可能不会自动浮到前台）
         root.deiconify()
-        root.lift()
-        root.attributes('-topmost', True)           # 临时置最顶层
-        root.after(300, lambda: root.attributes('-topmost', False))  # 300ms 后恢复
-        root.focus_force()
+
+        if platform.system() == 'Darwin':
+            # macOS：延迟 500ms 等事件循环启动后再激活
+            root.after(500, lambda: _macos_activate(root))
+        else:
+            # Windows：临时 topmost 强制置前台
+            root.lift()
+            root.attributes('-topmost', True)
+            root.after(300, lambda: root.attributes('-topmost', False))
+            root.focus_force()
+
         root.mainloop()
 
     if _no_console:
-        # pythonw.exe 无控制台模式：把未捕获异常写到日志文件，方便排查
+        # pythonw.exe / PyInstaller 无控制台模式：把未捕获异常写到日志文件
         try:
             _run()
         except Exception:
-            import os
+            import os, datetime
             log_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'crash.log')
             try:
                 with open(log_path, 'a', encoding='utf-8') as f:
-                    import datetime
                     f.write(f"\n[{datetime.datetime.now()}] 程序崩溃:\n")
                     f.write(traceback.format_exc())
             except Exception:
