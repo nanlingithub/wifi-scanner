@@ -12,6 +12,7 @@ import io
 
 # 修复 pythonw.exe 无控制台模式下 sys.stdout/stderr 为 None 的问题
 # 必须在所有其他 import 之前执行，否则某些模块（如 speedtest）在加载时会崩溃
+_no_console = sys.stdout is None   # 记录是否为无控制台模式（pythonw.exe）
 if sys.stdout is None:
     sys.stdout = io.StringIO()
 if sys.stderr is None:
@@ -478,9 +479,35 @@ Copyright © 2026 {DEVELOPER}
 
 def main():
     """主函数"""
-    root = tk.Tk()
-    app = WiFiProfessionalApp(root)
-    root.mainloop()
+    import traceback
+
+    def _run():
+        root = tk.Tk()
+        app = WiFiProfessionalApp(root)
+        # 确保窗口可见并置顶（pythonw.exe 下窗口可能不会自动浮到前台）
+        root.deiconify()
+        root.lift()
+        root.attributes('-topmost', True)           # 临时置最顶层
+        root.after(300, lambda: root.attributes('-topmost', False))  # 300ms 后恢复
+        root.focus_force()
+        root.mainloop()
+
+    if _no_console:
+        # pythonw.exe 无控制台模式：把未捕获异常写到日志文件，方便排查
+        try:
+            _run()
+        except Exception:
+            import os
+            log_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'crash.log')
+            try:
+                with open(log_path, 'a', encoding='utf-8') as f:
+                    import datetime
+                    f.write(f"\n[{datetime.datetime.now()}] 程序崩溃:\n")
+                    f.write(traceback.format_exc())
+            except Exception:
+                pass
+    else:
+        _run()
 
 
 if __name__ == '__main__':
