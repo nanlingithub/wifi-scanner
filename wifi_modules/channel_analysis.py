@@ -33,7 +33,11 @@ class ChannelAnalysisTab:
     }
     
     # ✅ P1: DFS信道范围（需雷达检测）
-    DFS_CHANNELS = list(range(52, 145, 4))
+    # 根据 IEEE 802.11 标准，5GHz DFS 信道为 UNII-2(52-64) 和 UNII-2E(100-144)
+    # 68~96 在任何地区规范中均不存在，已从原 range(52,145,4) 中剔除
+    DFS_CHANNELS = [52, 56, 60, 64,                          # UNII-2
+                    100, 104, 108, 112, 116, 120, 124, 128,  # UNII-2 Extended
+                    132, 136, 140, 144]                      # UNII-2 Extended (高段)
     
     # ✅ WiFi 6E/7: 信道绑定配置（支持20/40/80/160/320MHz）
     CHANNEL_40MHZ_PAIRS = [
@@ -146,6 +150,8 @@ class ChannelAnalysisTab:
         self.realtime_monitoring = False
         self.monitor_thread = None
         self.monitor_interval = 10  # 默认10秒
+        import threading as _threading
+        self._monitor_stop_event = _threading.Event()
         self.last_scan_time = None
         self.quality_history = deque(maxlen=50)  # 质量历史
         
@@ -443,6 +449,7 @@ class ChannelAnalysisTab:
         result += "║              📊 信道分析结果（增强版）                  ║\n"
         result += "╚══════════════════════════════════════════════════════════╝\n\n"
         
+        _quality_scores = []  # ✅ P1修复: 收集各频段最佳评分，用于写入quality_history
         for band in ['2.4GHz', '5GHz', '6GHz']:
             usage = self.channel_usage.get(band, {})
             if not usage:
@@ -460,6 +467,7 @@ class ChannelAnalysisTab:
                     
                     best_channel = max(scores.items(), key=lambda x: x[1])
                     best_score = best_channel[1]
+                    _quality_scores.append(best_score)  # ✅ 收集频段最佳评分
                     
                     result += f"{'📶' if band == '2.4GHz' else '📡' if band == '5GHz' else '🌐'} {band}频段:\n"
                     result += f"  • 占用信道: {len(usage)} 个\n"
@@ -485,6 +493,14 @@ class ChannelAnalysisTab:
                         result += "\n"
                     
                     result += "\n"
+                    
+                    # ✅ P0修复: 对最拥挤信道触发质量告警（原方法定义但从未被调用）
+                    congested_score = scores.get(most_used[0], best_score)
+                    self._check_quality_alerts(most_used[0], band, congested_score, count)
+        
+        # ✅ P1修复: 将整体质量评分写入quality_history（声明后从未写入数据）
+        if _quality_scores:
+            self.quality_history.append((datetime.now(), sum(_quality_scores) / len(_quality_scores)))
         
         # 信道绑定统计
         if any(self.bonding_stats.values()):
@@ -502,8 +518,7 @@ class ChannelAnalysisTab:
                 result += f"  • 间隔: {self.monitor_interval}秒\n"
                 if self.last_scan_time:
                     result += f"  • 上次扫描: {self.last_scan_time.strftime('%H:%M:%S')}\n"
-                    next_scan = datetime.fromtimestamp(self.last_scan_time.timestamp() + self.monitor_interval)
-                    result += f"  • 下次扫描: {next_scan.strftime('%H:%M:%S')}\n"
+                    result += f"  • 下次扫描: 见上方状态栏\n"  # ✅ P2修复: 去除重复计算
             else:
                 result += "🔄 实时监控: ⏸️ 未启用\n"
             result += "\n"
@@ -551,13 +566,39 @@ class ChannelAnalysisTab:
                 for idx, (ch, score) in enumerate(top_channels, 1):
                     emoji_rating = self._get_score_emoji(score)
                     
-                    # 计算预期吞吐量
+                    # 计算预期吞吐量（考虑频段、信道宽度、当前干扰评分）
+                    # 基准值基于主流 WiFi 6(802.11ax) 单空间流参考值
+                    # 2.4GHz: 20MHz=286Mbps; 5GHz: 80MHz=600Mbps, 160MHz=1201Mbps
+                    # 6GHz:  80MHz=1200Mbps, 160MHz=2401Mbps, 320MHz=4803Mbps（WiFi7）
+                    bonding = self.bonding_stats  # {'20MHz':n, '40MHz':n, '80MHz':n, '160MHz':n, '320MHz':n}
                     if band == '2.4GHz':
-                        max_throughput = 150 if score >= 80 else 100 if score >= 60 else 50
+                        # 2.4GHz 仅支持 20/40MHz；40MHz 在密集环境中慎用
+                        has_40 = bonding.get('40MHz', 0) > 0
+                        base = 573 if has_40 else 286  # WiFi6 双流参考
+                        max_throughput = int(base * (score / 100) * 0.6)  # 实际约为理论值60%
+                        max_throughput = max(20, max_throughput)
                     elif band == '5GHz':
-                        max_throughput = 800 if score >= 80 else 600 if score >= 60 else 400
-                    else:  # 6GHz
-                        max_throughput = 2400 if score >= 80 else 1800 if score >= 60 else 1200
+                        if bonding.get('160MHz', 0) > 0:
+                            base = 2402
+                        elif bonding.get('80MHz', 0) > 0:
+                            base = 1201
+                        elif bonding.get('40MHz', 0) > 0:
+                            base = 600
+                        else:
+                            base = 286  # 20MHz 单流
+                        max_throughput = int(base * (score / 100) * 0.6)
+                        max_throughput = max(50, max_throughput)
+                    else:  # 6GHz (WiFi 6E / WiFi 7)
+                        if bonding.get('320MHz', 0) > 0:
+                            base = 9608  # WiFi7 最大
+                        elif bonding.get('160MHz', 0) > 0:
+                            base = 4804
+                        elif bonding.get('80MHz', 0) > 0:
+                            base = 2402
+                        else:
+                            base = 1201  # 80MHz 默认最小
+                        max_throughput = int(base * (score / 100) * 0.6)
+                        max_throughput = max(200, max_throughput)
                     
                     recommendations.append(f"  {idx}. 信道 {ch} {'⭐' if idx == 1 else ''}\n")
                     recommendations.append(f"     • 干扰评分: {score:.1f}/100 {emoji_rating}\n")
@@ -608,8 +649,8 @@ class ChannelAnalysisTab:
                 networks_for_analyzer.append({
                     'ssid': net.get('ssid', 'Unknown'),
                     'channel': int(channel),
-                    'signal': int(net.get('signal', '-100').replace(' dBm', '')) if 'dBm' in str(net.get('signal', '')) else -100,
-                    'bssid': net.get('mac', 'Unknown')
+                    'signal': net.get('signal_percent', 0),
+                    'bssid': net.get('bssid', 'Unknown')
                 })
         
         # 分析数据
@@ -715,45 +756,6 @@ class ChannelAnalysisTab:
         except (ValueError, AttributeError, TypeError):
             # 信号值解析失败，返回默认弱信号
             return -100
-    
-    def _calculate_interference_score(self, ch: int, usage: dict, band: str) -> float:
-        """✅ P0: 计算信道干扰评分（IEEE 802.11标准）"""
-        score = 100
-        
-        # 自身占用惩罚（使用加权值）
-        if ch in usage:
-            ch_data = usage[ch]
-            if isinstance(ch_data, dict):
-                score -= ch_data['weight'] * 30  # 权重惩罚
-            else:
-                score -= ch_data * 25  # 兼容旧格式
-        
-        if band == '2.4GHz':
-            # 2.4GHz: 22MHz带宽，±4信道重叠
-            for offset in range(-4, 5):
-                adj_ch = ch + offset
-                if 1 <= adj_ch <= 13 and adj_ch != ch and adj_ch in usage:
-                    # 距离越近干扰越强（反比衰减）
-                    interference_factor = (5 - abs(offset)) / 5
-                    
-                    adj_data = usage[adj_ch]
-                    if isinstance(adj_data, dict):
-                        score -= adj_data['weight'] * 15 * interference_factor
-                    else:
-                        score -= adj_data * 15 * interference_factor
-        
-        elif band == '5GHz':
-            # 5GHz: 考虑信道绑定干扰
-            bonded_group = self._get_bonded_group(ch)
-            for bonded_ch in bonded_group:
-                if bonded_ch != ch and bonded_ch in usage:
-                    bonded_data = usage[bonded_ch]
-                    if isinstance(bonded_data, dict):
-                        score -= bonded_data['weight'] * 20
-                    else:
-                        score -= bonded_data * 20
-        
-        return max(0, score)
     
     def _get_bonded_group(self, ch: int) -> list:
         """获取信道可能的绑定组"""
@@ -933,48 +935,14 @@ class ChannelAnalysisTab:
         usage_5ghz = self.channel_usage.get('5GHz', {})
         
         self.heatmap_generator.generate_async(
-            channels_2ghz, usage_2ghz, '2.4GHz', on_2ghz_ready
+            channels_2ghz, usage_2ghz, '2.4GHz', on_2ghz_ready,
+            frame=self.frame
         )
         
         self.heatmap_generator.generate_async(
-            channels_5ghz, usage_5ghz, '5GHz', on_5ghz_ready, 
-            dfs_channels=self.DFS_CHANNELS
+            channels_5ghz, usage_5ghz, '5GHz', on_5ghz_ready,
+            dfs_channels=self.DFS_CHANNELS, frame=self.frame
         )
-    
-    def _draw_heatmap_2ghz(self, ax):
-        """绘制2.4GHz干扰热力图"""
-        channels = list(range(1, 14))
-        usage = self.channel_usage.get('2.4GHz', {})
-        
-        # 计算干扰矩阵
-        interference_matrix = np.zeros((len(channels), len(channels)))
-        
-        for i, ch1 in enumerate(channels):
-            for j, ch2 in enumerate(channels):
-                if abs(ch1 - ch2) <= 4:  # 重叠范围
-                    distance = abs(ch1 - ch2)
-                    interference_factor = (5 - distance) / 5
-                    
-                    ch2_data = usage.get(ch2, {})
-                    if isinstance(ch2_data, dict):
-                        interference_matrix[i, j] = ch2_data.get('weight', 0) * interference_factor
-                    else:
-                        interference_matrix[i, j] = ch2_data * interference_factor if ch2_data else 0
-        
-        # 绘制热力图
-        im = ax.imshow(interference_matrix, cmap='RdYlGn_r', aspect='auto', interpolation='bilinear')
-        
-        ax.set_xticks(range(len(channels)))
-        ax.set_xticklabels(channels)
-        ax.set_yticks(range(len(channels)))
-        ax.set_yticklabels(channels)
-        ax.set_xlabel('信道')
-        ax.set_ylabel('受影响信道')
-        ax.set_title('2.4GHz信道干扰热力图\n（颜色越深=干扰越强）', fontweight='bold')
-        
-        # 添加颜色条
-        cbar = ax.figure.colorbar(im, ax=ax)
-        cbar.set_label('干扰强度')
     
     def _draw_heatmap_2ghz_async(self, ax, matrix):
         """✅ Phase 2优化: 异步绘制2.4GHz热力图（使用预计算矩阵）"""
@@ -990,47 +958,6 @@ class ChannelAnalysisTab:
         ax.set_xlabel('信道')
         ax.set_ylabel('受影响信道')
         ax.set_title('2.4GHz信道干扰热力图\n（颜色越深=干扰越强）', fontweight='bold')
-        
-        # 添加颜色条
-        cbar = ax.figure.colorbar(im, ax=ax)
-        cbar.set_label('干扰强度')
-    
-    def _draw_heatmap_5ghz(self, ax):
-        """绘制5GHz干扰热力图"""
-        channels = [36, 40, 44, 48, 52, 56, 60, 64, 100, 104, 108, 112, 
-                   116, 120, 124, 128, 132, 136, 140, 149, 153, 157, 161, 165]
-        usage = self.channel_usage.get('5GHz', {})
-        
-        # 计算干扰矩阵
-        interference_matrix = np.zeros((len(channels), len(channels)))
-        
-        for i, ch1 in enumerate(channels):
-            bonded_group = self._get_bonded_group(ch1)
-            for j, ch2 in enumerate(channels):
-                if ch2 in bonded_group:
-                    ch2_data = usage.get(ch2, {})
-                    if isinstance(ch2_data, dict):
-                        interference_matrix[i, j] = ch2_data.get('weight', 0)
-                    else:
-                        interference_matrix[i, j] = ch2_data if ch2_data else 0
-        
-        # 绘制热力图
-        im = ax.imshow(interference_matrix, cmap='RdYlGn_r', aspect='auto', interpolation='nearest')
-        
-        ax.set_xticks(range(len(channels)))
-        ax.set_xticklabels(channels, rotation=45, fontsize=8)
-        ax.set_yticks(range(len(channels)))
-        ax.set_yticklabels(channels, fontsize=8)
-        ax.set_xlabel('信道')
-        ax.set_ylabel('受影响信道')
-        ax.set_title('5GHz信道干扰热力图（考虑信道绑定）', fontweight='bold')
-        
-        # 标记DFS区域
-        dfs_indices = [i for i, ch in enumerate(channels) if ch in self.DFS_CHANNELS]
-        if dfs_indices:
-            for idx in dfs_indices:
-                ax.axhspan(idx - 0.5, idx + 0.5, alpha=0.15, color='orange', zorder=0)
-                ax.axvspan(idx - 0.5, idx + 0.5, alpha=0.15, color='orange', zorder=0)
         
         # 添加颜色条
         cbar = ax.figure.colorbar(im, ax=ax)
@@ -1558,6 +1485,7 @@ class ChannelAnalysisTab:
         """✅ Phase 1优化: 切换实时监控状态"""
         if self.realtime_monitor_var.get():
             # 启动监控
+            self._monitor_stop_event.clear()
             self.realtime_monitoring = True
             self.last_scan_time = datetime.now()
             self._update_monitor_status("🔄 运行中", "green")
@@ -1565,6 +1493,7 @@ class ChannelAnalysisTab:
         else:
             # 停止监控
             self.realtime_monitoring = False
+            self._monitor_stop_event.set()
             self._update_monitor_status("⏸️ 已停止", "gray")
     
     def _update_monitor_interval(self, event=None):
@@ -1572,46 +1501,64 @@ class ChannelAnalysisTab:
         interval_str = self.monitor_interval_var.get()
         self.monitor_interval = int(interval_str.replace('秒', ''))
         
-        # 如果监控正在运行，重启线程
+        # ✅ P0修复: 通过递增代次让旧线程自动识别并退出，无需join（避免主线程死锁）
         if self.realtime_monitoring:
-            self.realtime_monitoring = False
-            import time
-            time.sleep(0.5)  # 等待旧线程结束
-            self.realtime_monitoring = True
-            self._start_monitor_thread()
+            self._monitor_stop_event.set()   # 中断旧线程当前等待
+            self._monitor_stop_event.clear()
+            self._start_monitor_thread()     # 新代次线程启动，旧线程代次检查失败后退出
     
     def _start_monitor_thread(self):
-        """启动监控线程"""
+        """✅ P0修复: 启动监控线程（通过frame.after将Tkinter操作隔离到主线程）"""
         import threading
         
-        def monitor_loop():
-            while self.realtime_monitoring:
-                try:
-                    # 执行扫描
-                    self._analyze_channels()
-                    self.last_scan_time = datetime.now()
-                    
-                    # 计算下次扫描时间
-                    next_scan = datetime.now().timestamp() + self.monitor_interval
-                    
-                    # 更新状态
-                    self.frame.after(0, lambda: self._update_monitor_status(
-                        f"🔄 运行中 (下次: {datetime.fromtimestamp(next_scan).strftime('%H:%M:%S')})", 
-                        "green"
-                    ))
-                    
-                    # 等待间隔
-                    import time
-                    for _ in range(self.monitor_interval * 10):  # 100ms精度
-                        if not self.realtime_monitoring:
-                            break
-                        time.sleep(0.1)
-                    
-                except Exception as e:
-                    print(f"监控循环错误: {e}")
-                    break
+        # 递增代次：旧线程检测到代次变更后自动退出，防止并发双线程写共享数据
+        self._monitor_gen = getattr(self, '_monitor_gen', 0) + 1
+        current_gen = self._monitor_gen
         
-        self.monitor_thread = threading.Thread(target=monitor_loop, daemon=True)
+        def monitor_loop():
+            while self.realtime_monitoring and self._monitor_gen == current_gen:
+                scan_done = threading.Event()
+                
+                def do_scan(evt=scan_done):
+                    """在主线程执行扫描，包含所有Tkinter操作，避免线程安全问题"""
+                    try:
+                        self._analyze_channels()
+                    finally:
+                        evt.set()
+                
+                # 将扫描调度到主线程，后台线程仅等待结果
+                self.frame.after(0, do_scan)
+                
+                # 等待扫描完成，每500ms检查一次停止信号
+                while not scan_done.wait(timeout=0.5):
+                    if not self.realtime_monitoring or self._monitor_gen != current_gen:
+                        return
+                
+                if not self.realtime_monitoring or self._monitor_gen != current_gen:
+                    return
+                
+                self.last_scan_time = datetime.now()
+                next_scan = self.last_scan_time.timestamp() + self.monitor_interval
+                self.frame.after(0, lambda ns=next_scan: self._update_monitor_status(
+                    f"🔄 运行中 (下次: {datetime.fromtimestamp(ns).strftime('%H:%M:%S')})",
+                    "green"
+                ))
+                
+                # 等待下次扫描间隔（可被停止事件中断）
+                self._monitor_stop_event.wait(timeout=self.monitor_interval)
+        
+        def monitor_loop_safe():
+            try:
+                monitor_loop()
+            except Exception as e:
+                print(f"监控循环错误: {e}")
+                # ✅ P1修复: 异常退出时更新UI，避免状态标签永远显示"运行中"
+                self.frame.after(0, lambda: [
+                    self._update_monitor_status("❌ 监控异常停止", "red"),
+                    self.realtime_monitor_var.set(False)
+                ])
+        
+        self.monitor_thread = threading.Thread(target=monitor_loop_safe, daemon=True)
         self.monitor_thread.start()
     
     def _update_monitor_status(self, text, color):
@@ -1619,37 +1566,55 @@ class ChannelAnalysisTab:
         self.monitor_status_label.config(text=text, foreground=color)
     
     def _calculate_interference_score(self, channel: int, usage: dict, band: str) -> float:
-        """✅ Phase 1优化: 增强干扰评分算法（含SNR检测）"""
-        score = 100
-        
-        # 1. 信道占用评分（当前已有）
+        """✅ Phase 1优化: 增强干扰评分算法（含SNR检测 + weight归一化）"""
+        score = 100.0
+
+        def _normalized_weight(ch_data) -> float:
+            """将 weight（累加值）归一化到 0~1：用 count 做平均避免大密度误判。"""
+            if not isinstance(ch_data, dict):
+                return 0.0
+            count = max(1, ch_data.get('count', 1))
+            raw = ch_data.get('weight', 0.0)
+            # 平均信号权重（0~1），再乘以网络数量密度因子（每3个网络算满载）
+            avg = raw / count
+            density = min(1.0, count / 3.0)
+            return avg * 0.6 + density * 0.4  # 综合考虑信号强度和网络密度
+
+        # 1. 当前信道占用扣分
         if channel in usage:
-            ch_data = usage[channel]
-            if isinstance(ch_data, dict):
-                score -= ch_data['weight'] * 30
-        
+            nw = _normalized_weight(usage[channel])
+            score -= nw * 50  # 最多扣 50 分（满载且强信号）
+
         # 2. 邻近信道干扰
         if band == '2.4GHz':
-            # 2.4GHz: 22MHz带宽，±4信道重叠
+            # 2.4GHz: 22MHz 信道带宽，±4 信道内存在重叠干扰（IEEE 802.11 标准）
             for offset in range(-4, 5):
+                if offset == 0:
+                    continue
                 neighbor = channel + offset
-                if neighbor in usage and neighbor != channel:
-                    ch_data = usage[neighbor]
-                    if isinstance(ch_data, dict):
-                        interference = ch_data['weight']
-                        distance_factor = max(0, 1 - abs(offset) / 5)
-                        score -= interference * distance_factor * 20
-        
+                if neighbor in usage:
+                    nw = _normalized_weight(usage[neighbor])
+                    distance_factor = max(0.0, 1.0 - abs(offset) / 5.0)
+                    score -= nw * distance_factor * 30  # 重叠越近扣分越多
+
         elif band == '5GHz':
-            # 5GHz: 20MHz隔离，仅相邻信道干扰
+            # 5GHz: 20MHz 信道独立不重叠，相邻信道几乎无干扰；
+            # 仅在信道绑定（40/80MHz）场景下相邻信道有少量干扰
             for offset in [-4, 4]:
                 neighbor = channel + offset
                 if neighbor in usage:
-                    ch_data = usage[neighbor]
-                    if isinstance(ch_data, dict):
-                        score -= ch_data['weight'] * 5
-        
-        return max(0, score)
+                    nw = _normalized_weight(usage[neighbor])
+                    score -= nw * 8  # 5GHz 相邻信道干扰很小
+
+        elif band == '6GHz':
+            # 6GHz: 信道间隔4，高密度部署时相邻信道仍有干扰
+            for offset in [-4, 4]:
+                neighbor = channel + offset
+                if neighbor in usage:
+                    nw = _normalized_weight(usage[neighbor])
+                    score -= nw * 5  # 6GHz 功率控制更严格，干扰更小
+
+        return max(0.0, score)
     
     def _get_score_emoji(self, score: float) -> str:
         """✅ Phase 1优化: 根据评分返回emoji和评级"""
@@ -1728,41 +1693,46 @@ class ChannelAnalysisTab:
                     }
                     return interference
         
-        # 4. ZigBee设备（通常使用信道11/15/20/25）
-        if channel in [11, 15, 20, 25]:
-            # ZigBee设备通常有特定的干扰模式
-            # 这里简化检测
-            interference = {
-                'source': '可能的ZigBee智能家居设备',
-                'impact': 'LOW',
-                'suggestion': '如有智能家居系统，建议分离WiFi和ZigBee',
-                'probability': 30
-            }
-        
+        # 4. ZigBee设备（通常使用信道11，与WiFi信道11重叠）
+        # 仅在信道11 AP 数量异常多（>5个）且平均权重中等时输出提示，
+        # 避免无条件对所有信道11用户输出虚假告警
+        if channel == 11:
+            ch_data = usage.get(11, {})
+            if isinstance(ch_data, dict):
+                count = ch_data.get('count', 0)
+                weight = ch_data.get('weight', 0.0)
+                avg_w = (weight / count) if count > 0 else 0
+                # 信道11 AP 密度高且平均信号偏弱，提示可能存在 ZigBee 竞争
+                if count > 5 and avg_w < 0.4:
+                    interference = {
+                        'source': '可能的ZigBee智能家居设备',
+                        'impact': 'LOW',
+                        'suggestion': '如有智能家居系统，建议将ZigBee协调器改为ZigBee信道15/20/25，远离WiFi2.4GHz',
+                        'probability': 40
+                    }
+
         return interference
     
     def _detect_bluetooth_activity(self) -> bool:
-        """检测蓝牙活动（简化版）"""
-        # 检查是否有大量低功率设备（蓝牙特征）
+        """推断当前环境蓝牙干扰可能性（基于 2.4GHz 高密度启发式规则）。
+
+        注意：Windows netsh 扫描结果仅包含 WiFi AP，无法直接检测蓝牙设备。
+        此方法通过以下启发式规则推断蓝牙共存干扰概率：
+          - 2.4GHz 网络密度高（>10 个 AP）表明密集的无线环境，蓝牙干扰概率上升；
+          - 信道1/6/11 同时拥挤，说明可用频谱已严重占用，蓝牙跳频影响更大。
+        精度有限，结果仅供参考。
+        """
         usage_24 = self.channel_usage.get('2.4GHz', {})
-        
-        # 计算平均RSSI权重
-        total_weight = sum(
-            data.get('weight', 0) if isinstance(data, dict) else 0
-            for data in usage_24.values()
-        )
-        
-        total_count = sum(
+        total_ap_count = sum(
             data.get('count', 0) if isinstance(data, dict) else 0
             for data in usage_24.values()
         )
-        
-        if total_count > 0:
-            avg_weight = total_weight / total_count
-            # 蓝牙设备权重通常较低（-70dBm以下）
-            return avg_weight < 0.3
-        
-        return False
+        # 主信道（1/6/11）同时有 AP 才判定高密度蓝牙干扰风险
+        key_channels_occupied = sum(
+            1 for ch in [1, 6, 11]
+            if (usage_24.get(ch, {}).get('count', 0) if isinstance(usage_24.get(ch, {}), dict) else 0) > 0
+        )
+        return total_ap_count > 10 and key_channels_occupied >= 3
     
     def _show_quality_alert_config(self):
         """✅ Phase 2优化: 质量告警配置窗口"""
@@ -2215,24 +2185,30 @@ class AsyncHeatmapGenerator:
         self.cache_size = cache_size
         self.computing = False
         self.compute_thread = None
+        import threading
+        self._lock = threading.Lock()  # ✅ P1: 保护computing标志
     
-    def generate_async(self, channels, usage, band, callback, dfs_channels=None):
-        """异步生成热力图矩阵"""
+    def generate_async(self, channels, usage, band, callback, dfs_channels=None, frame=None):
+        """异步生成热力图矩阵
+        
+        Args:
+            frame: Tkinter框架引用，用于线程安全地调度回调到主线程。
+                   若提供，非缓存回调将通过 frame.after(0,...) 在主线程执行。
+        """
         # 生成缓存键
         cache_key = self._make_cache_key(channels, usage, band)
         
-        # 检查缓存
+        # 检查缓存（在主线程，直接回调安全）
         if cache_key in self.cache:
-            # 缓存命中
             result = self.cache[cache_key]
             callback(result, from_cache=True)
             return
         
         # 缓存未命中，启动异步计算
-        if self.computing:
-            return  # 已有计算在进行
-        
-        self.computing = True
+        with self._lock:
+            if self.computing:
+                return  # 已有计算在进行
+            self.computing = True
         
         import threading
         def compute_task():
@@ -2246,13 +2222,17 @@ class AsyncHeatmapGenerator:
                 # 存入缓存
                 self._add_to_cache(cache_key, matrix)
                 
-                # 回调
-                callback(matrix, from_cache=False)
+                # ✅ 线程安全: 通过 frame.after(0) 将 Tkinter 回调分发到主线程
+                if frame is not None:
+                    frame.after(0, lambda m=matrix: callback(m, from_cache=False))
+                else:
+                    callback(matrix, from_cache=False)
                 
             except Exception as e:
                 print(f"热力图计算错误: {e}")
             finally:
-                self.computing = False
+                with self._lock:
+                    self.computing = False
         
         self.compute_thread = threading.Thread(target=compute_task, daemon=True)
         self.compute_thread.start()
@@ -2260,7 +2240,10 @@ class AsyncHeatmapGenerator:
     def _make_cache_key(self, channels, usage, band):
         """生成缓存键"""
         # 使用信道列表和占用数据的哈希值
-        usage_hash = hash(tuple(sorted(usage.items())))
+        usage_hash = hash(str(sorted(
+            (k, v.get('weight', 0) if isinstance(v, dict) else v)
+            for k, v in usage.items()
+        )))
         return (tuple(channels), usage_hash, band)
     
     def _add_to_cache(self, key, value):

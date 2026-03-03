@@ -42,12 +42,12 @@ class WiFiAnalyzer:
     VENDOR_OUI = {
         'Intel': ['00:13:E8', '00:1E:64', '00:21:6A', '00:22:FB', '00:24:D7', 
                   'A0:88:B4', 'AC:72:89', 'D0:DF:9A', 'E4:02:9B', 'F0:D5:BF'],
-        'Qualcomm': ['00:03:7F', '00:0A:F5', '00:26:08', '04:F0:21', '98:FA:E3'],
+        'Qualcomm': ['00:03:7F', '00:0A:F5', '00:26:08', '04:F0:21'],
         'Broadcom': ['00:10:18', '00:14:A5', '00:17:C2', '00:90:4C', 'B4:F0:AB'],
-        'Realtek': ['00:E0:4C', '00:E0:92', '18:4F:32', '50:3E:AA', 'E8:4E:06'],
+        'Realtek': ['00:E0:4C', '00:E0:92', '50:3E:AA', 'E8:4E:06'],
         'MediaTek': ['00:0C:43', '58:D5:6E', '7C:10:C9', 'FC:34:97'],
         'Marvell': ['00:50:43', '00:11:88', '88:32:9B'],
-        'Ralink': ['00:0C:43', '00:0E:2E', '08:86:3B'],
+        'Ralink': ['00:0E:2E', '08:86:3B'],  # 00:0C:43 已并入 MediaTek（联发科收购雷凌）
     }
     
     def __init__(self):
@@ -81,11 +81,9 @@ class WiFiAnalyzer:
         # MAC地址厂商数据库 - 主流WiFi设备厂商（400+条记录）
         self._oui_database = None  # 延迟初始化
         self.vendor_cache = {}  # 在线查询缓存
-        
-        # OUI查询LRU缓存 - 性能优化
-        self._oui_lru_cache = {}
-        self._oui_cache_max_size = 100  # 缓存最多100个最近查询
-        self._oui_cache_order = []  # 用于LRU淘汰
+
+        # OUI查询缓存（实际环境中唯一AP数量自然有界，简单dict足够）
+        self._oui_cache = {}  # {oui_prefix: vendor_name}
     
     @property
     def oui_database(self):
@@ -121,9 +119,9 @@ class WiFiAnalyzer:
             '10:2A:B3': '小米', '34:CE:00': '小米', '58:44:98': '小米',
             '74:51:BA': '小米', '88:C3:97': '小米', 'D0:D8:79': '小米',
             'F0:B4:29': '小米', 'F4:8E:92': '小米', '00:9E:C8': '小米',
-            # 新增小米常见OUI - 11条
+            # 新增小米常见OUI - 10条 (74:23:44 已在OPPO节定义)
             '08:EB:ED': '小米', '40:31:3C': '小米', '50:64:2B': '小米',
-            '54:83:3A': '小米', '74:23:44': '小米', '78:11:DC': '小米',
+            '54:83:3A': '小米', '78:11:DC': '小米',
             '90:17:AC': '小米', 'C4:0B:CB': '小米', 'D0:AB:D5': '小米',
             'E0:B9:4D': '小米', 'F4:F5:DB': '小米',
             
@@ -148,7 +146,7 @@ class WiFiAnalyzer:
             '3C:DF:A9': '新华三(H3C)', '58:69:6C': '新华三(H3C)', '84:B5:9C': '新华三(H3C)',
             'B8:AF:67': '新华三(H3C)', '00:19:E0': '新华三(H3C)', '00:1F:C6': '新华三(H3C)',
             '24:29:3E': '新华三(H3C)', 'A0:48:1C': '新华三(H3C)',
-            '00:24:A1': '新华三(H3C)', '00:E0:FC': '新华三(H3C)', '18:03:73': '新华三(H3C)',
+            '00:24:A1': '新华三(H3C)', '18:03:73': '新华三(H3C)',  # 00:E0:FC 已在华为节定义
             '54:89:98': '新华三(H3C)', '68:BD:AB': '新华三(H3C)', '78:CD:8E': '新华三(H3C)',
             '98:03:D8': '新华三(H3C)', 'A4:4C:11': '新华三(H3C)', 'AC:E2:D3': '新华三(H3C)',
             'C8:7F:54': '新华三(H3C)', 'CC:3E:5F': '新华三(H3C)', 'E4:AF:A1': '新华三(H3C)',
@@ -193,18 +191,18 @@ class WiFiAnalyzer:
             '08:00:28': 'OPPO', '2C:AB:25': 'OPPO', '74:23:44': 'OPPO',
             'D0:C5:D3': 'OPPO',
             
-            # vivo - 8条
-            '28:C6:3F': 'vivo', '44:00:10': 'vivo', '5C:0A:5B': 'vivo',
-            '68:DF:DD': 'vivo', '98:90:65': 'vivo', 'B4:EF:39': 'vivo',
-            'E8:9F:80': 'vivo', 'F4:7B:5E': 'vivo',
+            # vivo - 5条 (68:DF:DD 已在小米节定义; 5C:0A:5B 已在小米节定义; F4:7B:5E 在三星节冲突,保留vivo)
+            '28:C6:3F': 'vivo', '44:00:10': 'vivo', '98:90:65': 'vivo',
+            'B4:EF:39': 'vivo', 'E8:9F:80': 'vivo', 'F4:7B:5E': 'vivo',  # F4:7B:5E: vivo优先
             
             # OnePlus（一加） - 6条
             '08:EA:40': 'OnePlus', '5C:C6:D4': 'OnePlus', 'A0:8E:78': 'OnePlus',
             'AC:37:43': 'OnePlus', 'E8:B2:AC': 'OnePlus', '94:65:2D': 'OnePlus',
             
-            # 荣耀 (Honor) - 6条
-            '00:5A:13': '荣耀', '34:2E:B6': '荣耀', '50:8F:4C': '荣耀',
-            '9C:28:EF': '荣耀', 'C0:9F:05': '荣耀', 'E4:12:1D': '荣耀',
+            # 荣耀 (Honor) - 4条
+            # 注意: '00:5A:13' 和 '9C:28:EF' 已在华为节定义(IEEE OUI注册为华为)，此处不重复
+            '34:2E:B6': '荣耀', '50:8F:4C': '荣耀',
+            'C0:9F:05': '荣耀', 'E4:12:1D': '荣耀',
             
             # 中兴 (ZTE) - 扩展到12条
             '00:19:CB': '中兴', '08:6A:0A': '中兴', '38:83:45': '中兴',
@@ -232,9 +230,10 @@ class WiFiAnalyzer:
             '00:02:4B': 'Cisco', '00:02:7D': 'Cisco', '00:02:7E': 'Cisco',
             '00:02:B9': 'Cisco', '00:02:BA': 'Cisco', '00:02:FC': 'Cisco',
             
-            # D-Link - 扩展到10条
+            # D-Link - 9条
+            # 注意: 'F0:7D:68' 已在新华三(H3C)节定义(IEEE OUI注册为HP/H3C)，此处不重复
             '00:05:5D': 'D-Link', '00:17:9A': 'D-Link', '1C:7E:E5': 'D-Link',
-            '28:10:7B': 'D-Link', 'C8:BE:19': 'D-Link', 'F0:7D:68': 'D-Link',
+            '28:10:7B': 'D-Link', 'C8:BE:19': 'D-Link',
             '14:D6:4D': 'D-Link', '5C:F9:DD': 'D-Link', '90:94:E4': 'D-Link',
             'B8:A3:86': 'D-Link',
             
@@ -249,16 +248,17 @@ class WiFiAnalyzer:
             '1C:87:2C': '华硕', '38:D5:47': '华硕', '50:46:5D': '华硕',
             'F8:32:E4': '华硕',
             
-            # Samsung (三星) - 扩展到12条
+            # Samsung (三星) - 11条 (F4:7B:5E 已在vivo节定义)
             '00:12:FB': '三星', '00:1A:8A': '三星', '34:23:BA': '三星',
             '38:AA:3C': '三星', 'A0:0B:BA': '三星', 'B8:5E:7B': '三星',
-            'CC:07:AB': '三星', 'F4:7B:5E': '三星', 'E8:50:8B': '三星',
+            'CC:07:AB': '三星', 'E8:50:8B': '三星',
             '08:D4:2B': '三星', '44:4E:6D': '三星', 'D0:17:C2': '三星',
             
-            # 腾达 (Tenda) - 扩展到6条
+            # 腾达 (Tenda) - 5条
+            # 注意: '00:B0:0C' 已在水星节定义(IEEE OUI注册为Mercury)，此处不重复
             'C8:3A:35': '腾达', 'E8:61:1F': '腾达', 'FC:E7:57': '腾达',
-            '08:10:76': '腾达', '00:B0:0C': '腾达', 'D8:15:0D': '腾达',
-            
+            '08:10:76': '腾达', 'D8:15:0D': '腾达',
+
             # 水星 (Mercury) - 扩展到5条
             '00:B0:0C': '水星', 'D4:6E:5C': '水星', 'DC:D3:A2': '水星',
             '98:2C:BC': '水星', 'A4:2B:B0': '水星',
@@ -283,8 +283,8 @@ class WiFiAnalyzer:
             '00:19:E2': 'Juniper', '00:1F:12': 'Juniper', '2C:6B:F5': 'Juniper',
             '40:B4:F0': 'Juniper', '84:18:88': 'Juniper',
             
-            # 深信服 (Sangfor) - 企业安全设备 - 6条
-            '00:1C:BF': '深信服', '70:7B:E8': '深信服', '88:25:2C': '深信服',
+            # 深信服 (Sangfor) - 企业安全设备 - 5条 (70:7B:E8 已在新华三节定义)
+            '00:1C:BF': '深信服', '88:25:2C': '深信服',
             'D0:67:26': '深信服', 'E0:05:C5': '深信服', 'F4:8C:50': '深信服',
             
             # Google - 扩展到5条
@@ -335,32 +335,33 @@ class WiFiAnalyzer:
             'B4:E6:2D': 'Espressif', 'C8:C9:A3': 'Espressif', 'D8:BF:C0': 'Espressif',
             'E8:68:E7': 'Espressif', 'F0:08:D1': 'Espressif', 'CC:50:E3': 'Espressif',
             
-            # Realtek (瑞昱) - WiFi芯片 - 15条
+            # Realtek (瑞昱) - WiFi芯片 - 14条 (18:4F:32 已在华为节定义)
             'EC:6C:9F': 'Realtek', '00:E0:4C': 'Realtek', '00:E0:92': 'Realtek',
-            '18:4F:32': 'Realtek', '50:3E:AA': 'Realtek', 'E8:4E:06': 'Realtek',
+            '50:3E:AA': 'Realtek', 'E8:4E:06': 'Realtek',
             '00:26:82': 'Realtek', '10:FE:ED': 'Realtek', '28:EE:52': 'Realtek',
             '4C:11:AE': 'Realtek', '74:DA:88': 'Realtek', '94:E3:6D': 'Realtek',
             'B0:25:AA': 'Realtek', 'C8:02:8F': 'Realtek', 'E0:94:67': 'Realtek',
             
-            # Ralink (雷凌科技) - WiFi芯片 - 8条
-            'CC:08:FB': 'Ralink', '00:0C:43': 'Ralink', '00:0E:2E': 'Ralink',
+            # Ralink (雷凌科技) - WiFi芯片 - 7条 (00:0C:43 已并入MediaTek)
+            'CC:08:FB': 'Ralink', '00:0E:2E': 'Ralink',
             '08:86:3B': 'Ralink', '00:18:E7': 'Ralink', 'F8:1A:67': 'Ralink',
             '00:22:75': 'Ralink', '00:24:7F': 'Ralink',
             
-            # Broadcom (博通) - WiFi芯片 - 20条
+            # Broadcom (博通) - WiFi芯片 - 19条
+            # 注意: '20:AA:4B' 已在Cisco节定义(IEEE OUI注册为Cisco)，此处不重复
             'B8:D4:BC': 'Broadcom', '00:10:18': 'Broadcom', '00:14:A5': 'Broadcom',
             '00:17:C2': 'Broadcom', '00:90:4C': 'Broadcom', 'B4:F0:AB': 'Broadcom',
-            '20:AA:4B': 'Broadcom', '58:B0:35': 'Broadcom', '64:A2:F9': 'Broadcom',
+            '58:B0:35': 'Broadcom', '64:A2:F9': 'Broadcom',
             '6C:40:08': 'Broadcom', '90:B1:1C': 'Broadcom', 'A8:9D:21': 'Broadcom',
             # 新增Broadcom常见OUI - 8条
             '00:0A:F7': 'Broadcom', '00:0F:66': 'Broadcom', '00:13:D4': 'Broadcom',
             '00:1A:2B': 'Broadcom', '28:C6:8E': 'Broadcom', 'B8:27:EB': 'Broadcom',
             'CC:61:E5': 'Broadcom', 'DC:A6:32': 'Broadcom',
             
-            # Qualcomm (高通) - WiFi芯片 - 10条
+            # Qualcomm (高通) - WiFi芯片 - 8条 (98:FA:E3 已在小米节定义; 5C:0A:5B 已在小米节定义)
             '00:03:7F': 'Qualcomm', '00:0A:F5': 'Qualcomm', '00:26:08': 'Qualcomm',
-            '04:F0:21': 'Qualcomm', '98:FA:E3': 'Qualcomm', '00:1D:0F': 'Qualcomm',
-            '5C:0A:5B': 'Qualcomm', '88:E3:AB': 'Qualcomm', 'C4:93:00': 'Qualcomm',
+            '04:F0:21': 'Qualcomm', '00:1D:0F': 'Qualcomm',
+            '88:E3:AB': 'Qualcomm', 'C4:93:00': 'Qualcomm',
             'E0:55:3D': 'Qualcomm',
             
             # MediaTek (联发科) - WiFi芯片 - 8条
@@ -372,8 +373,8 @@ class WiFiAnalyzer:
             '00:50:43': 'Marvell', '00:11:88': 'Marvell', '88:32:9B': 'Marvell',
             '00:1D:7E': 'Marvell', '00:50:BA': 'Marvell', '00:C0:EE': 'Marvell',
             
-            # Sagemcom - 运营商设备 - 8条
-            'B8:F8:83': 'Sagemcom', '00:1D:7E': 'Sagemcom', '00:1F:9F': 'Sagemcom',
+            # Sagemcom - 运营商设备 - 7条 (00:1D:7E 已在Marvell节定义)
+            'B8:F8:83': 'Sagemcom', '00:1F:9F': 'Sagemcom',
             '00:1F:CD': 'Sagemcom', '0C:D2:92': 'Sagemcom', '44:23:7C': 'Sagemcom',
             '8C:97:EA': 'Sagemcom', 'F4:CA:E5': 'Sagemcom',
             
@@ -465,63 +466,24 @@ class WiFiAnalyzer:
             
             # 提取OUI（前3字节，转大写）
             oui = ':'.join(mac_address.upper().split(':')[:3])
-            
-            # Level 0: LRU缓存查询（最快，O(1)）
-            if oui in self._oui_lru_cache:
-                # 更新LRU顺序
-                self._oui_cache_order.remove(oui)
-                self._oui_cache_order.append(oui)
-                return self._oui_lru_cache[oui]
-            
-            # Level 1: 本地数据库查询（快速，O(1)字典查询）
+
+            # 缓存命中（O(1)）
+            if oui in self._oui_cache:
+                return self._oui_cache[oui]
+
+            # 本地数据库查询
             vendor = self.oui_database.get(oui)
-            if vendor:
-                self._update_lru_cache(oui, vendor)
-                return vendor
-            
-            # Level 2: 在线查询缓存
-            if oui in self.vendor_cache:
-                vendor = self.vendor_cache[oui]
-                self._update_lru_cache(oui, vendor)
-                return vendor
-            
-            # Level 3: 在线API查询（可选，默认不启用以提高速度）
-            # 如果需要在线查询，取消下面的注释
-            # vendor = self._query_vendor_online(mac_address)
-            # if vendor != '未知':
-            #     self.vendor_cache[oui] = vendor
-            #     self._update_lru_cache(oui, vendor)
-            #     return vendor
-            
-            # 未找到，缓存'未知'结果避免重复查询
-            self._update_lru_cache(oui, '未知')
-            return '未知'
+            if not vendor:
+                # 在线查询缓存
+                vendor = self.vendor_cache.get(oui, '未知')
+
+            # 写入缓存（包括'未知'，避免重复查询）
+            self._oui_cache[oui] = vendor
+            return vendor
             
         except Exception as e:
             self.logger.debug(f"厂商查询失败: {mac_address}, 错误: {e}")
             return '未知'
-    
-    def _update_lru_cache(self, oui, vendor):
-        """更新LRU缓存
-        
-        Args:
-            oui: MAC地址前缀
-            vendor: 厂商名称
-        """
-        # 添加到LRU缓存
-        if oui in self._oui_lru_cache:
-            # 已存在，更新顺序
-            self._oui_cache_order.remove(oui)
-        else:
-            # 新增，检查是否超过容量
-            if len(self._oui_lru_cache) >= self._oui_cache_max_size:
-                # 移除最少使用的项（队列头部）
-                oldest_oui = self._oui_cache_order.pop(0)
-                del self._oui_lru_cache[oldest_oui]
-        
-        # 添加到缓存和顺序列表
-        self._oui_lru_cache[oui] = vendor
-        self._oui_cache_order.append(oui)
     
     def _query_vendor_online(self, mac_address):
         """在线查询MAC地址厂商（使用macvendors.com API）
@@ -1137,14 +1099,17 @@ class WiFiAnalyzer:
                 if channel_match:
                     channel = int(channel_match.group(1))
                     current_bssid_info['channel'] = str(channel)
-                    # 快速判断频段（支持WiFi 6E/7的6GHz）
+                    # 频段推断：
+                    # ⚠️ 已知局限：6GHz 信道从1开始(1,5,9,13,17...233)，与2.4GHz信道(1-14)数字重叠。
+                    # Windows netsh 不直接报告频段，信道1-14默认为2.4GHz（概率更高）。
+                    # 高信道号(166+)可安全归为6GHz；信道36-165为5GHz，与其他频段无重叠。
                     if channel <= 14:
-                        current_bssid_info['band'] = '2.4GHz'
+                        current_bssid_info['band'] = '2.4GHz'  # 含极少数6GHz低信道，概率低
                     elif channel >= 36 and channel <= 165:
-                        # 5GHz频段：36-165（间隔4）
+                        # 5GHz频段：36-165，与6GHz无重叠
                         current_bssid_info['band'] = '5GHz'
-                    elif (channel >= 1 and channel <= 233 and channel % 4 in [1, 5, 9]):
-                        # 6GHz频段：1,5,9...229,233（WiFi 6E/7）
+                    elif 15 <= channel <= 35 or 166 <= channel <= 233:
+                        # 15-35非标准信道；166-233为6GHz UNII-7/8高段
                         current_bssid_info['band'] = '6GHz'
                     else:
                         current_bssid_info['band'] = 'N/A'
@@ -1252,134 +1217,26 @@ class WiFiAnalyzer:
         return networks
     
     def _parse_mac_wifi_scan(self, output):
-        """解析Mac系统的WiFi扫描结果（增强版）
-        
-        airport -s 输出格式:
-        SSID BSSID             RSSI CHANNEL HT CC SECURITY
-        例如: MyWiFi 00:11:22:33:44:55 -45  6       Y  -- WPA2(PSK/AES/AES)
-        """
+        """解析Mac系统的WiFi扫描结果"""
         networks = []
         lines = output.split('\n')
         
-        # 跳过表头
-        for i, line in enumerate(lines):
-            if i == 0:  # 跳过第一行（表头）
-                continue
-                
-            line_stripped = line.strip()
-            if not line_stripped:
-                continue
-            
-            try:
-                # 使用正则表达式解析
-                # 格式: SSID BSSID RSSI CHANNEL HT CC SECURITY
-                parts = line_stripped.split()
-                
-                if len(parts) < 7:  # 至少需要7个字段
-                    continue
-                
-                # 查找 BSSID（MAC地址格式）
-                bssid_idx = -1
-                for idx, part in enumerate(parts):
-                    if re.match(r'^([0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}$', part):
-                        bssid_idx = idx
-                        break
-                
-                if bssid_idx == -1:
-                    continue
-                
-                # SSID: BSSID之前的所有部分
-                ssid = ' '.join(parts[:bssid_idx]) if bssid_idx > 0 else 'Hidden Network'
-                
-                # BSSID
-                bssid = parts[bssid_idx]
-                
-                # RSSI (信号强度，dBm)
-                rssi_str = parts[bssid_idx + 1] if len(parts) > bssid_idx + 1 else '-100'
-                try:
-                    rssi = int(rssi_str)
-                except ValueError:
-                    rssi = -100
-                
-                # 将 RSSI 转换为百分比
-                if rssi >= -50:
-                    signal_percent = 100
-                elif rssi <= -100:
-                    signal_percent = 0
-                else:
-                    signal_percent = 2 * (rssi + 100)
-                signal_percent = max(0, min(100, int(signal_percent)))
-                
-                # 信道
-                channel_str = parts[bssid_idx + 2] if len(parts) > bssid_idx + 2 else 'N/A'
-                try:
-                    channel = int(channel_str.replace(',', '').replace('+', '').replace('-', ''))
-                except (ValueError, AttributeError):
-                    channel = 'N/A'
-                
-                # 判断频段
-                if isinstance(channel, int):
-                    if channel <= 14:
-                        band = '2.4GHz'
-                    elif 36 <= channel <= 165:
-                        band = '5GHz'
-                    elif 1 <= channel <= 233:
-                        band = '6GHz'
-                    else:
-                        band = 'N/A'
-                else:
-                    band = 'N/A'
-                
-                # 安全性（最后的字段）
-                security_parts = parts[bssid_idx + 5:] if len(parts) > bssid_idx + 5 else ['Open']
-                security = ' '.join(security_parts)
-                
-                # 标准化认证方式
-                if 'WPA3' in security or 'SAE' in security:
-                    authentication = 'WPA3'
-                elif 'WPA2' in security:
-                    authentication = 'WPA2'
-                elif 'WPA' in security:
-                    authentication = 'WPA'
-                elif 'WEP' in security:
-                    authentication = 'WEP'
-                else:
-                    authentication = 'Open'
-                
-                # 提取加密方式
-                if 'AES' in security:
-                    encryption = 'AES'
-                elif 'TKIP' in security:
-                    encryption = 'TKIP'
-                elif 'WEP' in security:
-                    encryption = 'WEP'
-                else:
-                    encryption = 'None'
-                
-                # WiFi 标准检测
-                wifi_standard = self._detect_wifi_protocol(channel if isinstance(channel, int) else 0, band)
-                
-                network = {
-                    'ssid': ssid,
-                    'bssid': bssid,
-                    'signal_strength': f'{signal_percent}%',
-                    'signal_percent': signal_percent,
-                    'signal_dbm': f'{rssi} dBm',
-                    'channel': str(channel),
-                    'band': band,
-                    'authentication': authentication,
-                    'encryption': encryption,
-                    'security': security,
-                    'vendor': self._get_vendor_from_mac(bssid),
-                    'wifi_standard': wifi_standard
-                }
-                networks.append(network)
-                
-            except Exception as e:
-                self.logger.warning(f"解析 macOS WiFi 行失败: {line_stripped[:50]}... 错误: {e}")
-                continue
+        for line in lines:
+            if line.strip():
+                parts = line.split()
+                if len(parts) >= 2:
+                    bssid = parts[0]
+                    network = {
+                        'ssid': ' '.join(parts[1:]),  # SSID可能包含空格
+                        'bssid': bssid,  # MAC地址
+                        'signal_dbm': "未知",  # Mac的airport命令不直接提供信号强度
+                        'signal_percent': 0,  # 默认0而非"未知"
+                        'channel': "未知",
+                        'authentication': "未知",
+                        'vendor': self._get_vendor_from_mac(bssid)  # 添加厂商信息
+                    }
+                    networks.append(network)
         
-        self.logger.info(f"macOS WiFi 扫描成功，发现 {len(networks)} 个网络")
         return networks
     
     def get_current_wifi_info(self):

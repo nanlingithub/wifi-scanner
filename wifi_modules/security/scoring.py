@@ -140,11 +140,16 @@ class SecurityScoreCalculator:
             if ssid in ['tp-link', 'netgear', 'linksys', 'default']:
                 suspicious_count += 1
         
-        # 环境评分
+        # 环境评分：基于比率而非绝对数量，避免大型扫描场景误判
+        # 开放率/弱加密率越高说明环境越不安全，与网络总数无关
+        open_rate = open_count / total if total > 0 else 0
+        weak_rate = weak_encryption_count / total if total > 0 else 0
+        suspicious_rate = suspicious_count / total if total > 0 else 0
+
         deduction = 0
-        deduction += open_count * 10
-        deduction += weak_encryption_count * 5
-        deduction += suspicious_count * 3
+        deduction += open_rate * 60        # 最大扣60分（全是开放网络）
+        deduction += weak_rate * 30        # 最大扣30分（全是弱加密）
+        deduction += suspicious_rate * 10  # 最大扣10分（全是可疑SSID）
         
         score = max(0, 100 - deduction)
         
@@ -262,12 +267,16 @@ class SecurityScoreCalculator:
         elif not isinstance(signal_percent, (int, float)):
             signal_percent = 0
         
+        # ✅ P1修复: signal=0 是无效 dBm 占位值（WiFi信号应为负数 -100~-20）
+        # 0 > -40 会触发错误扣分，过滤掉 signal >= 0 的情况，仅依赖 signal_percent
+        valid_signal = signal < 0
+
         # 信号过强（可能在公共场所，-20分）
-        if signal > -40 or signal_percent > 80:
+        if (valid_signal and signal > -40) or signal_percent > 80:
             score -= 20
         
         # 信号适中（家用范围，-10分）
-        elif signal > -60 or signal_percent > 50:
+        elif (valid_signal and signal > -60) or signal_percent > 50:
             score -= 10
         
         # 环境因素
@@ -427,3 +436,208 @@ class SecurityScoreCalculator:
             return 'D'
         else:
             return 'F'
+
+
+# ═══════════════════════════════════════════════════════════
+# 以下为模块级纯函数（原 scoring_enhanced.py 内容合并至此）
+# scoring_enhanced.py 现在只做重导出，用于向后兼容
+# ═══════════════════════════════════════════════════════════
+
+def calculate_encryption_score(encryption_type: str, authentication: str = None) -> int:
+    """计算加密方式评分（0-100）。"""
+    encryption_type = str(encryption_type).upper()
+
+    if 'WPA3' in encryption_type:
+        if 'ENTERPRISE' in encryption_type or 'EAP' in encryption_type:
+            return 100
+        if 'SAE' in encryption_type or 'PERSONAL' in encryption_type:
+            return 100
+        return 95
+
+    if 'WPA2' in encryption_type:
+        if 'ENTERPRISE' in encryption_type or 'EAP' in encryption_type:
+            return 90
+        if 'WPA3' in encryption_type:
+            return 90
+        if 'WPA' in encryption_type and encryption_type.index('WPA') < encryption_type.index('WPA2'):
+            return 70
+        if 'AES' in encryption_type or 'CCMP' in encryption_type or 'PSK' in encryption_type:
+            return 85
+        return 85
+
+    if 'WPA' in encryption_type:
+        if 'WPA2' in encryption_type:
+            return 70
+        if 'TKIP' in encryption_type or 'PSK' in encryption_type:
+            return 50
+        return 55
+
+    if 'WEP' in encryption_type:
+        return 10
+
+    if 'OPEN' in encryption_type or 'NONE' in encryption_type or not encryption_type:
+        return 0
+
+    return 30
+
+
+def calculate_wps_risk_score(wps_enabled: bool = False, wps_locked: bool = False,
+                              has_pixie_dust: bool = False, pin_enabled: bool = False,
+                              pbc_enabled: bool = False, pin_retries_exceeded: bool = False,
+                              has_null_pin: bool = False) -> int:
+    """计算 WPS 风险评分（0-100，分数越低越危险）。"""
+    if not wps_enabled:
+        return 100
+
+    score = 80
+    if wps_locked:
+        score += 5
+    else:
+        score -= 30
+    if has_pixie_dust:
+        score -= 50
+    if has_null_pin:
+        score -= 40
+    if pin_retries_exceeded:
+        score += 5
+    if pin_enabled:
+        score -= 10
+    return max(0, min(100, score))
+
+
+def calculate_password_strength_score(password: str) -> int:
+    """计算密码强度评分（0-100）。"""
+    if not password:
+        return 0
+
+    score = 0
+    length = len(password)
+    if length >= 16:
+        score += 40
+    elif length >= 12:
+        score += 25
+    elif length >= 8:
+        score += 15
+    else:
+        score += 5
+
+    has_lower   = any(c.islower() for c in password)
+    has_upper   = any(c.isupper() for c in password)
+    has_digit   = any(c.isdigit() for c in password)
+    has_special = any(not c.isalnum() for c in password)
+    score += sum([has_lower, has_upper, has_digit, has_special]) * 15
+
+    common_passwords = [
+        'password', '12345678', 'qwerty', 'admin', '123456',
+        'password123', 'admin123', '11111111', '00000000', '1234567890',
+    ]
+    if password.lower() in common_passwords:
+        score = min(score, 20)
+
+    if '123' in password or 'abc' in password.lower():
+        score -= 5
+    if len(set(password)) < len(password) / 2:
+        score -= 5
+
+    return max(0, min(100, score))
+
+
+def get_security_grade(score: int) -> tuple:
+    """根据分数返回 (grade, color) 元组。"""
+    if score >= 95:
+        return ('A+', '#00C853')
+    elif score >= 85:
+        return ('A', '#4CAF50')
+    elif score >= 75:
+        return ('B', '#8BC34A')
+    elif score >= 65:
+        return ('C', '#FFC107')
+    elif score >= 50:
+        return ('D', '#FF9800')
+    else:
+        return ('F', '#F44336')
+
+
+class SecurityScorer:
+    """综合安全评分器（原 scoring_enhanced.SecurityScorer，合并至 scoring.py）。"""
+
+    def __init__(self):
+        self.weights = {
+            'encryption':     0.4,
+            'wps':            0.2,
+            'password':       0.2,
+            'authentication': 0.2,
+        }
+
+    def calculate_score(self, encryption: str = "Unknown", authentication: str = "",
+                        wps_enabled: bool = False, wps_locked: bool = True,
+                        has_pixie_dust: bool = False, password_strength: int = None,
+                        password: str = None) -> dict:
+        """对网络进行综合安全评分，返回完整结果字典。"""
+        scores: dict = {}
+        vulnerabilities: list = []
+
+        scores['encryption'] = calculate_encryption_score(encryption, authentication)
+        if scores['encryption'] < 70:
+            vulnerabilities.append('encryption')
+
+        scores['wps'] = calculate_wps_risk_score(
+            wps_enabled=wps_enabled,
+            wps_locked=wps_locked,
+            has_pixie_dust=has_pixie_dust,
+        )
+        if wps_enabled:
+            vulnerabilities.append('wps')
+        if has_pixie_dust:
+            vulnerabilities.append('pixie_dust')
+
+        if password_strength is not None:
+            scores['password'] = password_strength
+        elif password:
+            scores['password'] = calculate_password_strength_score(password)
+        else:
+            scores['password'] = 50
+
+        if scores['password'] < 60:
+            vulnerabilities.append('weak_password')
+
+        auth = str(authentication).upper() if authentication else encryption.upper()
+        if 'WPA3' in auth and 'ENTERPRISE' in auth:
+            scores['authentication'] = 100
+        elif 'WPA2' in auth and 'ENTERPRISE' in auth:
+            scores['authentication'] = 90
+        elif 'WPA3' in auth:
+            scores['authentication'] = 95
+        elif 'WPA2' in auth:
+            scores['authentication'] = 80
+        elif 'WPA' in auth:
+            scores['authentication'] = 50
+        elif 'WEP' in auth:
+            scores['authentication'] = 10
+            vulnerabilities.append('wep')
+        else:
+            scores['authentication'] = 0
+
+        total_score = int(sum(scores[k] * self.weights[k] for k in scores))
+        grade, color = get_security_grade(total_score)
+
+        recommendations: list = []
+        if scores['encryption'] < 70:
+            recommendations.append('升级到WPA2-AES或WPA3加密')
+        if wps_enabled:
+            recommendations.append('禁用WPS功能以提高安全性')
+        if has_pixie_dust:
+            recommendations.append('WPS存在Pixie Dust漏洞，立即禁用')
+        if scores['password'] < 60:
+            recommendations.append('使用更强的密码（至少12位，包含大小写字母、数字、特殊字符）')
+
+        return {
+            'total_score':      total_score,
+            'encryption_score': scores['encryption'],
+            'wps_score':        scores['wps'],
+            'password_score':   scores['password'],
+            'grade':            grade,
+            'color':            color,
+            'vulnerabilities':  vulnerabilities,
+            'recommendations':  recommendations,
+        }

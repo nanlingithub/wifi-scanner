@@ -181,14 +181,9 @@ class SecurityTab:
     
     def _security_scan_worker(self):
         """安全扫描工作线程"""
-        # 清空结果
+        # ✅ P0修复: 仅通过 after() 在主线程中清空Tree，不在工作线程中直接操作tkinter控件
         self.frame.after(0, self._clear_all_trees)
         try:
-            # 清空之前的结果
-            for tree in [self.open_tree, self.weak_tree, self.wps_tree, 
-                        self.evil_tree, self.spoof_tree, self.pmf_tree, self.krack_tree]:
-                tree.delete(*tree.get_children())
-            
             # 扫描网络
             networks = self.wifi_analyzer.scan_wifi_networks(force_refresh=True)
             
@@ -284,12 +279,15 @@ class SecurityTab:
                         combined_risk = "中"
                 
                 # 添加到弱加密列表（显示综合风险）
-                if enc_analysis['security_level'] < 70 or krack_result['vulnerable'] or pmf_result['risk_level'] in ['HIGH', 'CRITICAL']:
+                # WPA2-Enterprise 的 KRACK severity=HIGH 不计入「弱加密」；
+                # 只有 severity=CRITICAL（WPA2-PSK）才触发弱加密标记。
+                krack_critical = krack_result.get('vulnerable') and krack_result.get('severity') == 'CRITICAL'
+                if enc_analysis['security_level'] < 70 or krack_critical or pmf_result['risk_level'] in ['HIGH', 'CRITICAL']:
                     # 构建风险原因
                     risk_reasons = []
                     if enc_analysis['security_level'] < 40:
                         risk_reasons.append("弱加密")
-                    if krack_result['vulnerable']:
+                    if krack_critical:
                         risk_reasons.append("KRACK")
                     if pmf_result['risk_level'] == 'CRITICAL':
                         risk_reasons.append("无PMF")
@@ -737,6 +735,7 @@ class SecurityTab:
             return
         
         try:
+            # ✅ P0修复: 报告中补充 KRACK 和 PMF 检测结果
             report = f"""WiFi安全扫描专业报告
 生成时间: {datetime.now().strftime('%Y年%m月%d日 %H:%M:%S')}
 扫描工具: WiFi专业工具 v2.0
@@ -748,6 +747,8 @@ class SecurityTab:
 开放网络: {len(self.scan_results['open'])}
 弱加密网络: {len(self.scan_results['weak'])}
 WPS漏洞网络: {len(self.scan_results['wps'])}
+KRACK漏洞网络: {len(self.scan_results.get('krack', []))}
+PMF防护问题: {len(self.scan_results.get('pmf', []))}
 可疑Evil Twin: {len(self.scan_results['evil_twin'])}
 SSID欺骗: {len(self.scan_results['ssid_spoof'])}
 
@@ -757,6 +758,23 @@ SSID欺骗: {len(self.scan_results['ssid_spoof'])}
 
 """
             
+            # KRACK漏洞（CVE-2017-13077族）
+            if self.scan_results.get('krack'):
+                report += "🔴 KRACK漏洞（CVE-2017-13077族）:\n"
+                for ssid, bssid, cve_count, cvss, status in self.scan_results['krack']:
+                    report += f"  • {ssid} ({bssid})\n"
+                    report += f"    CVE数量: {cve_count}, CVSS评分: {cvss}\n"
+                    report += f"    状态: {status}\n"
+                    report += f"    建议: 更新路由器固件或升级到WPA3-SAE\n\n"
+
+            # PMF防护问题
+            if self.scan_results.get('pmf'):
+                report += "🟠 PMF管理帧防护问题（802.11w）:\n"
+                for ssid, bssid, pmf_status, risk_level, recommendation in self.scan_results['pmf']:
+                    report += f"  • {ssid} ({bssid})\n"
+                    report += f"    PMF状态: {pmf_status}, 风险等级: {risk_level}\n"
+                    report += f"    建议: {recommendation}\n\n"
+
             # WPS漏洞
             if self.scan_results['wps']:
                 report += "⚠️ WPS漏洞（CRITICAL）:\n"
@@ -785,19 +803,37 @@ SSID欺骗: {len(self.scan_results['ssid_spoof'])}
             report += f"\n{'='*60}\n【专业建议】\n{'='*60}\n\n"
             
             # 生成建议
+            step = 1
+            if self.scan_results.get('krack'):
+                report += f"{step}. KRACK漏洞修复（优先级: 最高）\n"
+                report += "   • 立即更新路由器固件（KRACK补丁）\n"
+                report += "   • 更新所有WiFi客户端设备驱动程序\n"
+                report += "   • 升级到WPA3-SAE（根本解决方案）\n"
+                report += "   • 临时措施：使用VPN加密所有流量\n\n"
+                step += 1
+
+            if self.scan_results.get('pmf'):
+                report += f"{step}. PMF管理帧防护（优先级: 高）\n"
+                report += "   • 在路由器后台启用802.11w（PMF）功能\n"
+                report += "   • 防止Deauthentication/Disassociation攻击\n"
+                report += "   • 或升级到WPA3（强制启用PMF）\n\n"
+                step += 1
+
             if self.scan_results['wps']:
-                report += "1. WPS漏洞修复（优先级: 最高）\n"
+                report += f"{step}. WPS漏洞修复（优先级: 最高）\n"
                 report += "   • 立即禁用所有路由器的WPS功能\n"
                 report += "   • 更新路由器固件到最新版本\n"
                 report += "   • 使用WPA2-AES或WPA3加密\n\n"
+                step += 1
             
             if self.scan_results['evil_twin']:
-                report += "2. Evil Twin防护\n"
+                report += f"{step}. Evil Twin防护\n"
                 report += "   • 不要连接可疑的WiFi网络\n"
                 report += "   • 使用VPN加密数据传输\n"
                 report += "   • 检查路由器MAC地址和IP配置\n\n"
+                step += 1
             
-            report += "3. 通用安全建议\n"
+            report += f"{step}. 通用安全建议\n"
             report += "   • 使用WPA2-PSK(AES)或WPA3加密\n"
             report += "   • 设置12位以上强密码\n"
             report += "   • 定期更换WiFi密码\n"

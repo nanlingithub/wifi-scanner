@@ -64,34 +64,59 @@ class VulnerabilityDetector:
             return "加密方式安全"
     
     def check_wps_vulnerability(self, network: Dict) -> Dict:
-        """检查WPS漏洞"""
-        # 简化版WPS检测
+        """评估WPS漏洞风险（统计估算，非实测）
+        
+        注意：Windows netsh 命令不返回WPS启用状态，
+        本函数基于统计规律对WPS风险进行估算，并非实际检测。
+        要确认WPS状态需使用 Wireshark 或专业无线扫描工具。
+        """
         signal_percent = network.get('signal_percent', 0)
-        # 修复：确保signal_percent是数字类型
+        # 确保signal_percent是数字类型
         if isinstance(signal_percent, str):
             signal_percent = int(signal_percent.rstrip('%')) if signal_percent != '未知' else 0
         elif not isinstance(signal_percent, (int, float)):
             signal_percent = 0
-        
+
         auth = network.get('authentication', '').lower()
-        
-        # 假设WPA/WPA2网络可能开启WPS
-        vulnerable = 'wpa' in auth and signal_percent > 30
-        
-        if vulnerable:
-            return {
-                'vulnerable': True,
-                'vulnerability_type': 'WPS PIN暴力破解',
-                'severity': '高' if signal_percent > 60 else '中',
-                'exploit_time': '2-4小时' if signal_percent > 60 else '4-10小时'
-            }
-        else:
+
+        # WPA3网络默认不支持WPS（SAE认证替代），开放网络无需WPS
+        # WPA/WPA2网络大概率开启了WPS（家用路由器出厂默认开启）
+        if 'wpa3' in auth or 'open' in auth or '开放' in auth:
             return {
                 'vulnerable': False,
                 'vulnerability_type': 'N/A',
                 'severity': '低',
-                'exploit_time': 'N/A'
+                'exploit_time': 'N/A',
+                'note': 'WPA3/开放网络无WPS风险'
             }
+
+        # WPA/WPA2：基于统计估算风险，信号强弱影响实际可利用性
+        if 'wpa' in auth:
+            # 仅在信号足够强（>50%）时才标记为可疑风险，避免误报
+            if signal_percent > 50:
+                return {
+                    'vulnerable': True,
+                    'vulnerability_type': 'WPS PIN暴力破解（估算）',
+                    'severity': '中',
+                    'exploit_time': '4-12小时（视WPS锁定策略而定）',
+                    'note': '⚠️ 此为统计估算，建议用专业工具确认WPS状态后再判断'
+                }
+            else:
+                return {
+                    'vulnerable': False,
+                    'vulnerability_type': 'WPS PIN暴力破解（低风险）',
+                    'severity': '低',
+                    'exploit_time': 'N/A',
+                    'note': '信号弱，实际利用难度高；建议在路由器后台确认WPS是否已关闭'
+                }
+
+        return {
+            'vulnerable': False,
+            'vulnerability_type': 'N/A',
+            'severity': '低',
+            'exploit_time': 'N/A',
+            'note': '无法评估'
+        }
     
     def detect_evil_twin(self, networks: List[Dict]) -> List[Dict]:
         """检测Evil Twin（钓鱼热点）"""
@@ -321,15 +346,28 @@ class SecurityScoreCalculator:
 
 
 class DNSHijackDetector:
-    """DNS劫持检测器"""
-    
+    """DNS劫持检测器（旧版存根，已由 wifi_modules/security/dns_detector.py 取代）"""
+
     def check(self) -> Dict:
-        """检测DNS劫持"""
-        # 简化版DNS检测
-        # 实际应检测DNS响应是否正常
+        """检测DNS劫持（存根—始终返回安全状态）
         
+        ⚠️ 此方法是向后兼容存根，不做真实检测。
+        新代码应使用 wifi_modules.security.DNSHijackDetector.check_dns_hijacking()。
+        """
         return {
             'hijacked': False,
-            'dns_servers': ['正常'],
-            'recommendation': 'DNS设置正常，未检测到劫持'
+            'dns_servers': ['未检测（请使用新版 DNSHijackDetector）'],
+            'recommendation': '此为旧版存根，请使用 security.DNSHijackDetector.check_dns_hijacking() 进行实际检测'
+        }
+
+    def check_dns_hijacking(self) -> Dict:
+        """与新版接口兼容的委托方法（旧版存根，不做实际检测）"""
+        result = self.check()
+        # 适配新版输出格式
+        return {
+            'hijacked': result['hijacked'],
+            'hijacked_domains': [],
+            'current_dns': result['dns_servers'],
+            'test_results': [],
+            'recommendations': [result['recommendation']]
         }

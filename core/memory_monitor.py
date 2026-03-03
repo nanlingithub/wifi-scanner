@@ -52,6 +52,7 @@ class MemoryMonitor:
         """启动内存监控"""
         if not self.running:
             self.running = True
+            self._stop_event = threading.Event()  # 可中断的睡眠事件
             self.monitor_thread = threading.Thread(
                 target=self._monitor_loop,
                 daemon=True,
@@ -59,20 +60,25 @@ class MemoryMonitor:
             )
             self.monitor_thread.start()
             self.logger.info("✅ 内存监控已启动")
-    
+
     def stop(self):
         """停止内存监控"""
         self.running = False
+        if hasattr(self, '_stop_event'):
+            self._stop_event.set()  # 立即唤醒正在睡眠的监控线程
         if self.monitor_thread and self.monitor_thread.is_alive():
-            self.monitor_thread.join(timeout=3)
+            self.monitor_thread.join(timeout=1)  # 最多等 1 秒，应能立即退出
         self.logger.info("🛑 内存监控已停止")
-    
+
     def _monitor_loop(self):
         """监控循环"""
         while self.running:
             try:
                 self._log_memory_usage()
-                time.sleep(self.interval)
+                # 用 Event.wait() 替代 time.sleep()，可被 stop() 立即唤醒
+                self._stop_event.wait(self.interval)
+                if self._stop_event.is_set():
+                    break
             except Exception as e:
                 self.logger.error(f"内存监控出错: {e}")
     

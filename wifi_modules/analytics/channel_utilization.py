@@ -5,7 +5,8 @@
 import matplotlib.pyplot as plt
 from matplotlib.figure import Figure
 import matplotlib
-matplotlib.use('TkAgg')
+# 注意: 不在模块层面调用 matplotlib.use()，避免影响全进程 backend
+# backend 应由主程序（wifi_professional.py）统一配置
 from collections import defaultdict
 from typing import Dict, List, Tuple
 import numpy as np

@@ -11,19 +11,18 @@ from typing import Any, Dict, Optional
 
 
 class ConfigManager:
-    """统一配置管理器
-    
-    功能:
-    - 从config.json加载配置
-    - 支持点号路径访问: get('wifi_scanner.timeout')
-    - 提供默认值
-    - 配置验证
-    - 热重载支持
-    
+    """统一配置管理器（单例）
+
+    职责:
+    - JSON 应用配置 (config.json): 通过 get(key) / set(key) 访问
+    - YAML 阈值配置 (config/thresholds.yml): 通过 get_yaml(key) 访问
+
+    新代码统一使用本类，无需直接实例化 ConfigLoader。
+
     示例:
         config = ConfigManager()
         timeout = config.get('wifi_scanner.scan_timeout', 5)
-        max_retries = config.get('wifi_scanner.max_retries', 2)
+        threshold = ConfigManager.get_yaml('signal_quality.thresholds.excellent', default=70)
     """
     
     _instance = None  # 单例模式
@@ -156,10 +155,35 @@ class ConfigManager:
                 return user_default
         
         return value
-    
+
+    # ─────────────────────────────────────────────
+    # YAML 阈值配置统一入口
+    # 使 ConfigManager 成为所有配置的单一门面，
+    # 避免调用方直接实例化 ConfigLoader。
+    # ─────────────────────────────────────────────
+    @classmethod
+    def get_yaml(cls, key_path: str, config_file: str = 'thresholds.yml',
+                 default=None):
+        """从 YAML 配置文件获取阈值（委托给 ConfigLoader）。
+
+        Args:
+            key_path:    点号路径，如 'signal_quality.thresholds.excellent'
+            config_file: YAML 文件名，默认 thresholds.yml
+            default:     找不到时的返回值
+
+        Returns:
+            配置值或 default
+
+        示例:
+            threshold = ConfigManager.get_yaml('signal_quality.thresholds.excellent', default=70)
+        """
+        from .config_loader import ConfigLoader  # 延迟导入避免循环
+        loader = ConfigLoader()
+        return loader.get(key_path, default)
+
     def set(self, key_path: str, value: Any, save: bool = False) -> None:
         """设置配置值
-        
+
         Args:
             key_path: 配置路径
             value: 配置值
@@ -167,7 +191,7 @@ class ConfigManager:
         """
         keys = key_path.split('.')
         config = self.config
-        
+
         # 创建嵌套字典结构
         for key in keys[:-1]:
             if key not in config:

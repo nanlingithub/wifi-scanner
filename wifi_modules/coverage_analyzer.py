@@ -21,44 +21,8 @@ class CoverageAnalyzer:
         'critical': (-80, -90, '极差', '不可用')
     }
     
-    # 应用场景需求标准
-    SCENARIO_REQUIREMENTS = {
-        '高密度办公': {
-            'min_signal': -60,
-            'coverage_rate': 95,
-            'max_ap_overlap': 3,
-            'channel_bandwidth': 40,
-            'recommended_standard': 'WiFi 6'
-        },
-        '普通办公': {
-            'min_signal': -65,
-            'coverage_rate': 90,
-            'max_ap_overlap': 2,
-            'channel_bandwidth': 40,
-            'recommended_standard': 'WiFi 5'
-        },
-        '教育培训': {
-            'min_signal': -60,
-            'coverage_rate': 98,
-            'max_ap_overlap': 2,
-            'channel_bandwidth': 80,
-            'recommended_standard': 'WiFi 6'
-        },
-        '医疗健康': {
-            'min_signal': -55,
-            'coverage_rate': 99,
-            'max_ap_overlap': 1,
-            'channel_bandwidth': 80,
-            'recommended_standard': 'WiFi 6E'
-        },
-        '工业制造': {
-            'min_signal': -70,
-            'coverage_rate': 85,
-            'max_ap_overlap': 2,
-            'channel_bandwidth': 20,
-            'recommended_standard': 'WiFi 4/5'
-        }
-    }
+    # 应用场景需求标准 — 引用 core/constants.py 规范定义
+    from core.constants import SCENARIO_REQUIREMENTS  # type: ignore[misc]
     
     def __init__(self, scenario: str = '普通办公'):
         """初始化覆盖分析器
@@ -325,9 +289,20 @@ class CoverageAnalyzer:
         return max(0, min(100, (dbm + 90) * 100 / 60))
     
     def _get_signal_grade(self, dbm: float) -> Tuple[str, str, str]:
-        """获取信号等级"""
-        for key, (min_dbm, max_dbm, name, desc) in self.SIGNAL_GRADES.items():
-            if min_dbm <= dbm < max_dbm:
+        """获取信号等级
+
+        SIGNAL_GRADES 的元组格式为 (upper_dbm, lower_dbm, name, desc)，
+        其中 upper_dbm > lower_dbm（例如 -30 > -50 → excellent）。
+        判断区间：lower_dbm <= signal < upper_dbm（在 dBm 数轴上向左更弱）。
+        超强信号（>= -30 dBm）统一归为优秀。
+        """
+        # 超强信号保护（>= -30 dBm, 极靠近 AP）
+        if dbm >= -30:
+            return ('excellent', '优秀', '适合高密度应用')
+        # 元组格式: (upper_dbm=-30, lower_dbm=-50, name, desc) for excellent
+        # 因此区间判断应为 lower_dbm <= dbm < upper_dbm
+        for key, (upper_dbm, lower_dbm, name, desc) in self.SIGNAL_GRADES.items():
+            if lower_dbm <= dbm < upper_dbm:
                 return (key, name, desc)
         return ('critical', '极差', '不可用')
     

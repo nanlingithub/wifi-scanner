@@ -14,6 +14,7 @@ from datetime import datetime
 
 from .theme import ModernTheme, ModernButton, ModernCard, create_section_title
 from .visualization_utils import HeatmapVisualizer
+from core.constants import WALL_ATTENUATION as _WALL_ATTENUATION, ENVIRONMENT_FACTORS as _ENVIRONMENT_FACTORS
 
 # 优化算法导入（P0）
 
@@ -31,38 +32,10 @@ except ImportError:
 
 class SignalPropagationModel:
     """WiFi信号传播模型（P0-2）"""
-    
-    # 墙体衰减系数（dB）- ✅ P1扩展: 从5种扩展到12种材料
-    WALL_ATTENUATION = {
-        # 重型墙体 (>15dB)
-        '钢筋混凝土': 20,
-        '金属板': 30,
-        '隔音墙': 25,
-        
-        # 中型墙体 (10-15dB)
-        '混凝土墙': 15,
-        '承重砖墙': 12,
-        '砖墙': 10,
-        
-        # 轻型墙体 (5-9dB)
-        '石膏板墙': 5,
-        '木质隔断': 4,
-        '玻璃幕墙': 3,
-        
-        # 轻量障碍 (<5dB)
-        '木门': 3,
-        '玻璃门': 2,
-        '玻璃': 2
-    }
-    
-    # ✅ 优化: 环境因子配置
-    ENVIRONMENT_FACTORS = {
-        'office': 1.2,     # 办公室: 隔断多
-        'home': 1.0,       # 家庭: 标准
-        'factory': 1.5,    # 工厂: 金属设备多
-        'hospital': 1.1,   # 医院: 轻质隔墙
-        'school': 1.3      # 学校: 人群密集
-    }
+
+    # 引用 core/constants.py 中的规范定义，消除重复
+    WALL_ATTENUATION = _WALL_ATTENUATION
+    ENVIRONMENT_FACTORS = _ENVIRONMENT_FACTORS
     
     @staticmethod
     def calculate_fspl(distance_m, frequency_ghz=2.4):
@@ -862,8 +835,8 @@ class DeploymentTab:
             def objective(positions):
                 aps = positions.reshape(num_aps, 2)
                 
-                # 目标1: 最大化覆盖率 (权重55%)
-                coverage = self._calculate_coverage_for_aps(aps)
+                # 目标1: 最大化覆盖率 (权重55%) ✅ P0修复: 使用增强版覆盖计算（含墙体衰减+信号质量分层）
+                coverage = self._calculate_coverage_for_aps_enhanced(aps)[0]
                 
                 # ✅ P1优化: 障碍物约束惩罚
                 validity_penalty = 0
@@ -1189,43 +1162,60 @@ class DeploymentTab:
         return weighted_score, coverage_metrics
     
     def _predict_coverage_improvement(self, ap_positions):
-        """预测覆盖率改善 (优化版 - 蒙特卡洛采样)"""
+        """✅ P1修复: 预测覆盖率改善 (自适应蒙特卡洛采样 + 增强信号模型)"""
         current_coverage = self._calculate_area_coverage(60)
         
-        # ✅ 蒙特卡洛采样预测 (替代简化公式)
-        num_samples = 500  # 采样点数量
+        # ✅ P1修复: 自适应采样数量 — 按空间面积动态调整 (3点/m²，上下限300~2000)
+        area_m2 = self.canvas_width * self.canvas_height * (self.scale_meters ** 2)
+        num_samples = max(300, min(2000, int(area_m2 * 3)))
+        
         sample_points = []
         
-        # 在平面图上均匀采样
-        for _ in range(num_samples):
+        # 70% 均匀随机采样
+        uniform_count = int(num_samples * 0.7)
+        for _ in range(uniform_count):
             x = np.random.randint(0, self.canvas_width)
             y = np.random.randint(0, self.canvas_height)
             sample_points.append((x, y))
         
-        # 计算每个采样点被新AP覆盖的情况
+        # 30% 聚焦弱信号测量点周围 (提高改善评估精度)
+        focused_count = num_samples - uniform_count
+        weak_points = [p for p in self.measurement_points if p.get('signal', 100) < 60]
+        if weak_points:
+            for _ in range(focused_count):
+                base = weak_points[np.random.randint(0, len(weak_points))]
+                x = int(np.clip(base['x'] + np.random.normal(0, 50), 0, self.canvas_width - 1))
+                y = int(np.clip(base['y'] + np.random.normal(0, 50), 0, self.canvas_height - 1))
+                sample_points.append((x, y))
+        else:
+            for _ in range(focused_count):
+                x = np.random.randint(0, self.canvas_width)
+                y = np.random.randint(0, self.canvas_height)
+                sample_points.append((x, y))
+        
+        # ✅ P1修复: 使用增强版信号传播模型（含多径、环境因子、天线增益）
+        enhanced_model = SignalPropagationModelEnhanced()
         covered_by_new_aps = 0
-        tx_power = 20  # 假设发射功率20dBm
+        tx_power = 20  # dBm
         
         for point in sample_points:
             max_signal = -100
             
-            # 计算所有推荐AP对该点的最大信号强度
             for ap in ap_positions:
-                ap_pos = (ap['x'], ap['y'])
-                predicted_dbm = SignalPropagationModel.predict_signal(
+                # 兼容 dict 格式 {'x','y'} 与 ndarray 格式 [x, y]
+                ap_pos = (int(ap['x']) if isinstance(ap, dict) else int(ap[0]),
+                          int(ap['y']) if isinstance(ap, dict) else int(ap[1]))
+                predicted_dbm, _ = enhanced_model.predict_signal_enhanced(
                     tx_power, ap_pos, point, self.obstacles, 2.4
                 )
                 max_signal = max(max_signal, predicted_dbm)
             
-            # 信号强度>-70dBm认为覆盖良好
             if max_signal > -70:
                 covered_by_new_aps += 1
         
-        # 计算新增覆盖率
-        predicted_new_coverage = (covered_by_new_aps / num_samples) * 100
-        
-        # 考虑与现有覆盖的重叠 (估算80%重叠)
-        actual_improvement = predicted_new_coverage * 0.2  # 20%为新增区域
+        # 新总覆盖率 - 现有覆盖率 = 实际改善量（无硬编码重叠系数）
+        predicted_total_coverage = (covered_by_new_aps / len(sample_points)) * 100
+        actual_improvement = max(0, predicted_total_coverage - current_coverage)
         
         return min(actual_improvement, 100 - current_coverage)
     
@@ -1573,8 +1563,8 @@ class DeploymentTab:
                 log("   ✅ 未发现明显盲区\n")
             
             log("💡 步骤3: 计算推荐AP数量...")
-            # 简单估算：每200平方米1个AP
-            area = (self.canvas_width / 100) * (self.canvas_height / 100)  # 转换为平方米
+            # 简单估算：每200平方米1个AP ✅ P1修复: 使用scale_meters正确换算像素→平方米
+            area = self.canvas_width * self.canvas_height * (self.scale_meters ** 2)
             recommended_count = max(2, int(area / 200) + 1)
             log(f"   覆盖面积: {area:.0f} 平方米")
             log(f"   推荐AP数量: {recommended_count} 个\n")
@@ -1607,7 +1597,8 @@ class DeploymentTab:
             log(f"   ✅ 优化完成！生成 {len(self.recommended_aps)} 个AP位置\n")
             
             log("📈 步骤5: 评估覆盖效果...")
-            coverage = self._calculate_coverage_for_aps(optimized_positions)
+            # ✅ P0修复: 使用增强版覆盖计算（含墙体衰减+信号质量分层）
+            coverage = self._calculate_coverage_for_aps_enhanced(optimized_positions)[0]
             log(f"   预期覆盖率: {coverage*100:.1f}%")
             
             if coverage >= 0.9:

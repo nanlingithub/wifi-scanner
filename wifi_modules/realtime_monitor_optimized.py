@@ -314,9 +314,9 @@ class OptimizedRealtimeMonitorTab:
         
         # 等待监控线程结束（超时保护）
         if self.monitor_thread and self.monitor_thread.is_alive():
-            self.monitor_thread.join(timeout=3)  # ✅ 3秒超时
+            self.monitor_thread.join(timeout=1)  # stop_event 已设置，应立即退出
             if self.monitor_thread.is_alive():
-                print("⚠️ 监控线程未在3秒内结束")
+                print("⚠️ 监控线程未在1秒内结束（将随进程退出）")
             else:
                 print("✅ 监控线程已正常结束")
     
@@ -396,8 +396,10 @@ class OptimizedRealtimeMonitorTab:
                 
                 # 重置错误计数
                 consecutive_errors = 0
-                
-                time.sleep(interval)
+
+                # 用 stop_event.wait() 替代 time.sleep()，可被立即唤醒
+                if self.stop_event.wait(timeout=interval):
+                    break  # stop_event 被设置时立即退出循环
                 
             except Exception as e:
                 consecutive_errors += 1
@@ -1541,7 +1543,7 @@ class OptimizedRealtimeMonitorTab:
     def _toggle_mute(self):
         """切换静音"""
         muted = self.alert_mute.get()
-        self.alert_manager.set_mute(muted)
+        self.alert_manager.mute = muted
     
     def _show_alert_settings(self):
         """显示警报设置"""

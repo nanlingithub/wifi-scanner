@@ -56,11 +56,9 @@ class TestWiFiAnalyzerInit:
     def test_vendor_cache_initialization(self):
         """测试厂商缓存初始化"""
         analyzer = WiFiAnalyzer()
-        
+
         assert isinstance(analyzer.vendor_cache, dict)
-        assert isinstance(analyzer._oui_lru_cache, dict)
-        assert analyzer._oui_cache_max_size == 100
-        assert isinstance(analyzer._oui_cache_order, list)
+        assert isinstance(analyzer._oui_cache, dict)
 
 
 @pytest.mark.skipif(not HAS_WIFI_ANALYZER, reason="需要WiFiAnalyzer模块")
@@ -126,31 +124,27 @@ class TestMACVendorDetection:
             assert vendor in ["Unknown", "", None] or isinstance(vendor, str)
     
     def test_lru_cache_update(self, analyzer):
-        """测试LRU缓存更新"""
+        """测试OUI缓存写入"""
         oui = "00:13:E8"
         vendor = "Intel"
-        
-        # 更新缓存
-        analyzer._update_lru_cache(oui, vendor)
-        
+
+        # 直接写入缓存
+        analyzer._oui_cache[oui] = vendor
+
         # 验证缓存
-        assert oui in analyzer._oui_lru_cache
-        assert analyzer._oui_lru_cache[oui] == vendor
-        assert oui in analyzer._oui_cache_order
-    
+        assert oui in analyzer._oui_cache
+        assert analyzer._oui_cache[oui] == vendor
+
     def test_lru_cache_size_limit(self, analyzer):
-        """测试LRU缓存大小限制"""
-        # 添加超过最大缓存大小的条目
-        max_size = analyzer._oui_cache_max_size
-        
-        for i in range(max_size + 10):
+        """测试OUI缓存批量写入"""
+        # 写入120个条目（无大小限制）
+        for i in range(120):
             oui = f"00:00:{i:02X}"
             vendor = f"Vendor_{i}"
-            analyzer._update_lru_cache(oui, vendor)
-        
-        # 缓存大小不应超过限制
-        assert len(analyzer._oui_lru_cache) <= max_size
-        assert len(analyzer._oui_cache_order) <= max_size
+            analyzer._oui_cache[oui] = vendor
+
+        # 缓存应包含所有写入的条目
+        assert len(analyzer._oui_cache) >= 120
 
 
 @pytest.mark.skipif(not HAS_WIFI_ANALYZER, reason="需要WiFiAnalyzer模块")

@@ -179,52 +179,51 @@ class PerformanceBenchmarkWindow:
                         btn.config(state='disabled')
         
         def progress_callback(status):
-            """进度回调 - 显示实时进度"""
-            self.status_label.config(text=status)
-            
-            # 更新进度条和文本
-            if "安装" in status:
-                self.progress_var.set(10)
-                self._update_progress_text(f"📦 {status}\n")
-            elif "获取" in status or "选择" in status:
-                self.progress_var.set(20)
-                self._update_progress_text(f"🌐 {status}\n")
-            elif "测试延迟" in status or "ping" in status.lower():
-                self.progress_var.set(30)
-                self._update_progress_text(f"📡 {status}\n")
-            elif "下载" in status or "download" in status.lower():
-                self.progress_var.set(50)
-                self._update_progress_text(f"⬇️ {status}\n")
-            elif "上传" in status or "upload" in status.lower():
-                self.progress_var.set(80)
-                self._update_progress_text(f"⬆️ {status}\n")
-            elif "完成" in status or "成功" in status:
-                self.progress_var.set(100)
-                self._update_progress_text(f"✅ {status}\n")
-            else:
-                self._update_progress_text(f"ℹ️ {status}\n")
-            
-            self.window.update()
-        
+            """进度回调 - 必须通过 after(0) 切回主线程操作 tkinter"""
+            def _ui_update():
+                self.status_label.config(text=status)
+                if "安装" in status:
+                    self.progress_var.set(10)
+                    self._update_progress_text(f"📦 {status}\n")
+                elif "获取" in status or "选择" in status:
+                    self.progress_var.set(20)
+                    self._update_progress_text(f"🌐 {status}\n")
+                elif "测试延迟" in status or "ping" in status.lower():
+                    self.progress_var.set(30)
+                    self._update_progress_text(f"📡 {status}\n")
+                elif "下载" in status or "download" in status.lower():
+                    self.progress_var.set(50)
+                    self._update_progress_text(f"⬇️ {status}\n")
+                elif "上传" in status or "upload" in status.lower():
+                    self.progress_var.set(80)
+                    self._update_progress_text(f"⬆️ {status}\n")
+                elif "完成" in status or "成功" in status:
+                    self.progress_var.set(100)
+                    self._update_progress_text(f"✅ {status}\n")
+                else:
+                    self._update_progress_text(f"ℹ️ {status}\n")
+            # 通过 after(0) 确保在主线程执行，tkinter 线程安全
+            self.window.after(0, _ui_update)
+
         def complete_callback(result):
-            """完成回调"""
-            self.is_testing = False
-            
-            # 启用按钮
-            for widget in self.window.winfo_children():
-                if isinstance(widget, ttk.Frame):
-                    for btn in widget.winfo_children():
-                        if isinstance(btn, ModernButton):
-                            btn.config(state='normal')
-            
-            if 'error' in result:
-                self.status_label.config(text=f"失败: {result['error']}", fg='red')
-                messagebox.showerror("测试失败", result['error'])
-            else:
-                self.status_label.config(text="测试完成", fg='green')
-                self._display_result(result)
-                self._refresh_display()
-                messagebox.showinfo("测试完成", "网速测试成功完成！")
+            """完成回调 - 通过 after(0) 切回主线程"""
+            def _on_complete():
+                self.is_testing = False
+                # 启用按钮
+                for widget in self.window.winfo_children():
+                    if isinstance(widget, ttk.Frame):
+                        for btn in widget.winfo_children():
+                            if isinstance(btn, ModernButton):
+                                btn.config(state='normal')
+                if 'error' in result:
+                    self.status_label.config(text=f"失败: {result['error']}", fg='red')
+                    messagebox.showerror("测试失败", result['error'])
+                else:
+                    self.status_label.config(text="测试完成", fg='green')
+                    self._display_result(result)
+                    self._refresh_display()
+                    messagebox.showinfo("测试完成", "网速测试成功完成！")
+            self.window.after(0, _on_complete)
         
         # 异步执行测试
         self.benchmark.run_speed_test_async(
@@ -248,11 +247,12 @@ class PerformanceBenchmarkWindow:
             loss_text = f"{result['packet_loss']} %" if result['packet_loss'] > 0 else "N/A"
             self.packet_loss_label.config(text=loss_text)
         
-        # 显示评级
+        # 显示评级（传入已有协议值，避免重复调用 netsh）
         rating = self.benchmark.get_quality_rating(
-            result['download'], 
-            result['upload'], 
-            result['ping']
+            result['download'],
+            result['upload'],
+            result['ping'],
+            wifi_protocol=result.get('wifi_protocol')
         )
         
         self.rating_text.delete('1.0', 'end')
@@ -312,15 +312,21 @@ ISP: {result['client']['isp']}
         history_win = tk.Toplevel(self.window)
         history_win.title("📊 测速历史记录")
         history_win.geometry("800x500")
-        
+
+        # 容器 frame，用 grid 布局保证滚动条始终可见
+        container = ttk.Frame(history_win)
+        container.pack(fill='both', expand=True, padx=10, pady=10)
+        container.grid_rowconfigure(0, weight=1)
+        container.grid_columnconfigure(0, weight=1)
+
         # 创建表格
         columns = ('时间', '下载(Mbps)', '上传(Mbps)', '延迟(ms)', '服务器')
-        tree = ttk.Treeview(history_win, columns=columns, show='headings')
-        
+        tree = ttk.Treeview(container, columns=columns, show='headings')
+
         for col in columns:
             tree.heading(col, text=col)
             tree.column(col, width=150)
-        
+
         # 填充数据
         for record in reversed(history):  # 最新的在前
             tree.insert('', 'end', values=(
@@ -330,13 +336,12 @@ ISP: {result['client']['isp']}
                 record['ping'],
                 record['server']['name']
             ))
-        
-        tree.pack(fill='both', expand=True, padx=10, pady=10)
-        
-        # 滚动条
-        scrollbar = ttk.Scrollbar(history_win, orient='vertical', command=tree.yview)
-        scrollbar.pack(side='right', fill='y')
+
+        # 滚动条与 Treeview 同时 grid，确保滚动条可见
+        scrollbar = ttk.Scrollbar(container, orient='vertical', command=tree.yview)
         tree.config(yscrollcommand=scrollbar.set)
+        tree.grid(row=0, column=0, sticky='nsew')
+        scrollbar.grid(row=0, column=1, sticky='ns')
     
     def _show_trend(self):
         """显示趋势图"""

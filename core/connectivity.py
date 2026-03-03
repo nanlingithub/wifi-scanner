@@ -23,8 +23,8 @@ class ConnectivityDiagnostic:
     
     def __init__(self):
         self.system = platform.system().lower()
-        # 设置默认socket超时
-        socket.setdefaulttimeout(5)
+        # 注意: 不在此处设置全局 socket 超时（会影响进程内所有 socket 操作）
+        # 超时通过各检测方法的 timeout 参数逐个设置
         self.logger = LoggerConfig.get_logger()
     
     def check_network_adapters(self):

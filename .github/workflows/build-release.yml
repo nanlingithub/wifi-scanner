@@ -1,137 +1,203 @@
-name: Build and Release
+name: 构建与发布 WiFi 专业工具
 
 on:
   push:
     tags:
-      - 'v*'
-  workflow_dispatch:  # 允许手动触发
+      - 'v*.*.*'        # 推送版本标签时触发，如 v1.6.3
+  workflow_dispatch:    # 支持手动触发
+    inputs:
+      create_release:
+        description: '是否创建 Release（仅手动触发时有效）'
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: write       # 创建 Release 需要写权限
 
 jobs:
+  # ─────────────────────────────────────────────────────
+  # Job 1: 构建 Windows EXE
+  # ─────────────────────────────────────────────────────
   build-windows:
+    name: 🪟 构建 Windows EXE
     runs-on: windows-latest
+
     steps:
-      - uses: actions/checkout@v3
-      
-      - name: Set up Python
-        uses: actions/setup-python@v4
+      - name: 📥 检出代码
+        uses: actions/checkout@v4
+
+      - name: 🐍 设置 Python 3.11
+        uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      
-      - name: Install dependencies
+          cache: 'pip'
+
+      - name: 📦 安装依赖
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-          pip install pyinstaller
-      
-      - name: Build Windows executable
+          pip install "pyinstaller>=6.0.0"
+
+      - name: 🔨 构建 Windows EXE
         run: |
-          pyinstaller --clean --noconfirm wifi_professional.spec
-      
-      - name: Upload Windows artifact
+          pyinstaller wifi_professional.spec --clean --noconfirm
+
+      - name: 🗜️ 压缩构建产物
+        shell: pwsh
+        run: |
+          Compress-Archive -Path "dist\WiFi专业工具" `
+            -DestinationPath "WiFi专业工具-Windows-x64.zip" `
+            -Force
+          Write-Host "ZIP 大小: $([math]::Round((Get-Item 'WiFi专业工具-Windows-x64.zip').Length/1MB,1)) MB"
+
+      - name: 📤 上传 Windows 产物
         uses: actions/upload-artifact@v4
         with:
-          name: WiFiProfessional-Windows
-          path: dist/WiFi专业工具/WiFi专业工具.exe
+          name: WiFi-Windows
+          path: WiFi专业工具-Windows-x64.zip
           retention-days: 30
 
+  # ─────────────────────────────────────────────────────
+  # Job 2: 构建 macOS .app
+  # ─────────────────────────────────────────────────────
   build-macos:
+    name: 🍎 构建 macOS App
     runs-on: macos-latest
+
     steps:
-      - uses: actions/checkout@v3
-      
-      - name: Set up Python
-        uses: actions/setup-python@v4
+      - name: 📥 检出代码
+        uses: actions/checkout@v4
+
+      - name: 🐍 设置 Python 3.11
+        uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      
-      - name: Install dependencies
+          cache: 'pip'
+
+      - name: 📦 安装依赖
         run: |
           python -m pip install --upgrade pip
+          # pyarrow 在 macOS 上用预编译包安装
           pip install -r requirements.txt
-          pip install pyinstaller
-      
-      - name: Build macOS application
+          pip install "pyinstaller>=6.0.0"
+
+      - name: 🔨 构建 macOS App Bundle
         run: |
-          pyinstaller --clean --noconfirm build_macos.spec
-      
-      - name: Create DMG
+          pyinstaller wifi_professional_macos.spec --clean --noconfirm
+
+      - name: 📀 创建 DMG 安装包
         run: |
           # 创建临时目录
-          mkdir -p dist/dmg
-          cp -r "dist/WiFi专业工具.app" dist/dmg/
-          
-          # 创建 DMG
-          hdiutil create -volname "WiFi Professional" \
-            -srcfolder dist/dmg \
-            -ov -format UDZO \
-            dist/WiFiProfessional-macOS.dmg
-      
-      - name: Upload macOS artifact
+          mkdir -p dmg_staging
+
+          # 复制 .app 到临时目录
+          cp -R "dist/WiFi专业工具.app" "dmg_staging/"
+
+          # 创建 DMG（UDZO = zlib 压缩）
+          hdiutil create \
+            -srcfolder dmg_staging \
+            -volname "WiFi专业工具" \
+            -format UDZO \
+            -imagekey zlib-level=9 \
+            -o "WiFi专业工具-macOS.dmg"
+
+          echo "DMG 大小: $(du -sh WiFi专业工具-macOS.dmg | cut -f1)"
+
+      - name: 📤 上传 macOS 产物
         uses: actions/upload-artifact@v4
         with:
-          name: WiFiProfessional-macOS
-          path: dist/WiFiProfessional-macOS.dmg
+          name: WiFi-macOS
+          path: WiFi专业工具-macOS.dmg
           retention-days: 30
 
-  build-linux:
+  # ─────────────────────────────────────────────────────
+  # Job 3: 发布 GitHub Release（仅 tag 推送时执行）
+  # ─────────────────────────────────────────────────────
+  release:
+    name: 🚀 发布 GitHub Release
+    needs: [build-windows, build-macos]
     runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v3
-      
-      - name: Set up Python
-        uses: actions/setup-python@v4
-        with:
-          python-version: '3.11'
-      
-      - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y python3-tk
-      
-      - name: Install Python dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-          pip install pyinstaller
-      
-      - name: Build Linux executable
-        run: |
-          pyinstaller --clean --noconfirm wifi_professional.spec
-      
-      - name: Upload Linux artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: WiFiProfessional-Linux
-          path: dist/WiFi专业工具/WiFi专业工具
-          retention-days: 30
+    if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.create_release == true)
 
-  create-release:
-    needs: [build-windows, build-macos, build-linux]
-    runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/')
     steps:
-      - name: Download all artifacts
+      - name: 📥 下载所有构建产物
         uses: actions/download-artifact@v4
-      
-      - name: Create Release
-        uses: softprops/action-gh-release@v1
         with:
-          files: |
-            WiFiProfessional-Windows/WiFi专业工具.exe
-            WiFiProfessional-macOS/WiFiProfessional-macOS.dmg
-            WiFiProfessional-Linux/WiFi专业工具
-          draft: false
-          prerelease: false
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          path: artifacts
 
-  build-summary:
-    needs: [build-windows, build-macos, build-linux]
-    runs-on: ubuntu-latest
-    steps:
-      - name: Build Summary
+      - name: 🔍 列出产物文件
         run: |
-          echo "✅ All platform builds completed successfully!"
-          echo "- Windows: WiFi专业工具.exe"
-          echo "- macOS: WiFiProfessional-macOS.dmg"
-          echo "- Linux: WiFi专业工具"
+          echo "=== 构建产物 ==="
+          find artifacts -type f | sort
+          echo ""
+          echo "=== 文件大小 ==="
+          find artifacts -type f -exec du -sh {} \;
+
+      - name: 🏷️ 获取版本号
+        id: get_version
+        run: |
+          if [[ "${{ github.ref }}" == refs/tags/* ]]; then
+            VERSION="${{ github.ref_name }}"
+          else
+            VERSION="dev-$(date +%Y%m%d)"
+          fi
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+          echo "版本: ${VERSION}"
+
+      - name: 📝 发布 GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.get_version.outputs.version }}
+          name: WiFi 专业分析工具 ${{ steps.get_version.outputs.version }}
+          body: |
+            ## 🛜 WiFi 专业分析工具 ${{ steps.get_version.outputs.version }}
+
+            > 适用于 Windows 和 macOS 的专业 WiFi 网络诊断与分析工具
+
+            ---
+
+            ### 📥 下载
+
+            | 平台 | 文件 | 说明 |
+            |------|------|------|
+            | 🪟 Windows 10/11 x64 | `WiFi专业工具-Windows-x64.zip` | 解压后双击 `WiFi专业工具.exe` 运行 |
+            | 🍎 macOS 12+ (Monterey+) | `WiFi专业工具-macOS.dmg` | 挂载 DMG 后将 App 拖入"应用程序"文件夹 |
+
+            ---
+
+            ### ✨ 主要功能
+
+            - **WiFi 扫描** — 扫描周边所有 WiFi 热点，显示信号强度、频段、协议（WiFi 6/6E/7）
+            - **信号雷达图** — 实时 T0→T11 历史趋势极坐标图，显示 dBm 数值
+            - **频道分析** — 2.4GHz / 5GHz / 6GHz 频道占用和干扰分析
+            - **性能压测** — 网速测试（下载/上传/延迟），支持多次历史对比
+            - **企业报告** — PDF/Excel 安全合规报告（PCI-DSS、WPA3 评估）
+            - **热力图** — WiFi 信号覆盖范围可视化与 AP 部署规划
+            - **实时监控** — 信号变化实时折线图，可配置告警阈值
+
+            ---
+
+            ### 🖥️ 系统要求
+
+            | 平台 | 要求 |
+            |------|------|
+            | Windows | Windows 10/11，**需要管理员权限**（用于 WiFi 扫描） |
+            | macOS | macOS 12 Monterey 及以上，需要允许 WiFi 访问权限 |
+
+            ---
+
+            ### ⚠️ 注意事项
+
+            - **Windows**：首次运行会请求 UAC 管理员权限，请点击"是"
+            - **macOS**：首次打开需在"系统偏好设置 → 安全性与隐私"中允许运行未签名应用
+              ```
+              在 Finder 中右键 App → 打开 → 仍然打开
+              ```
+
+          files: |
+            artifacts/WiFi-Windows/WiFi专业工具-Windows-x64.zip
+            artifacts/WiFi-macOS/WiFi专业工具-macOS.dmg
+          draft: false
+          prerelease: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+          generate_release_notes: true

@@ -1,10 +1,10 @@
 # -*- mode: python ; coding: utf-8 -*-
 """
 WiFi Professional macOS 打包配置文件
-使用 PyInstaller 将程序打包成 macOS .app 应用
+使用 PyInstaller 将程序打包成 macOS .app 包
 
 使用方法:
-    pyinstaller build_macos.spec
+    pyinstaller wifi_professional_macos.spec --clean
 
 生成文件:
     dist/WiFi专业工具.app
@@ -24,11 +24,11 @@ hiddenimports = [
     'tkinter.messagebox',
     'tkinter.filedialog',
     'tkinter.scrolledtext',
-    
+
     # matplotlib 后端
     'matplotlib.backends.backend_tkagg',
     'matplotlib.backends.backend_agg',
-    
+
     # scipy 子模块
     'scipy.special',
     'scipy.special.cython_special',
@@ -38,11 +38,11 @@ hiddenimports = [
     'scipy._lib',
     'scipy._lib._array_api',
     'scipy._lib.array_api_compat',
-    
+
     # sklearn 子模块
     'sklearn.utils._weight_vector',
     'sklearn.neighbors._partition_nodes',
-    
+
     # 其他依赖
     'psutil',
     'numpy',
@@ -55,7 +55,7 @@ hiddenimports = [
     'reportlab.pdfbase.pdfmetrics',
     'reportlab.lib.pagesizes',
     'openpyxl',
-    
+
     # YAML 支持
     'yaml',
     'yaml.loader',
@@ -69,7 +69,7 @@ hiddenimports = [
     'yaml.serializer',
     'yaml.representer',
     '_yaml',
-    
+
     # 项目模块
     'core',
     'core.admin_utils',
@@ -78,7 +78,7 @@ hiddenimports = [
     'core.utils',
     'core.wifi_analyzer',
     'core.wifi_vendor_detector',
-    
+
     'wifi_modules',
     'wifi_modules.config_loader',
     'wifi_modules.config_manager',
@@ -88,7 +88,7 @@ hiddenimports = [
     'wifi_modules.font_config',
     'wifi_modules.icon_system',
     'wifi_modules.cache_manager',
-    
+
     # 功能模块
     'wifi_modules.network_overview',
     'wifi_modules.channel_analysis',
@@ -98,49 +98,34 @@ hiddenimports = [
     'wifi_modules.security_tab',
     'wifi_modules.enterprise_report_tab',
     'wifi_modules.interference_locator_tab',
-    'wifi_modules.wifi6_analyzer_tab',
-    
-    # 子模块
+
+    # 安全模块
     'wifi_modules.security',
-    'wifi_modules.security.vulnerability_detector',
-    'wifi_modules.security.password_analyzer',
-    'wifi_modules.security.dns_detector',
-    'wifi_modules.security.evil_twin_detector',
-    'wifi_modules.security.ssid_spoof_detector',
-    'wifi_modules.security.pmf_detector',
-    'wifi_modules.security.krack_detector',
-    'wifi_modules.security.wps_detector',
-    'wifi_modules.security.security_scoring',
+    'wifi_modules.security.scoring',
+    'wifi_modules.security.vulnerability',
     'wifi_modules.security.dns_enhanced',
+    'wifi_modules.security.password',
     'wifi_modules.security.dynamic_scoring',
-    
+
+    # 分析模块
     'wifi_modules.analytics',
     'wifi_modules.analytics.channel_utilization',
-    
+    'wifi_modules.analytics.signal_trend',
+
+    # 告警模块
     'wifi_modules.alerts',
     'wifi_modules.alerts.signal_alert',
-    
-    'wifi_modules.enterprise_reports',
 ]
 
 # 收集数据文件
-datas = []
+datas = [
+    ('config.json', '.'),
+    ('wifi_icon.ico', '.'),
+    *collect_data_files('matplotlib'),
+    *collect_data_files('reportlab'),
+    *collect_data_files('sklearn'),
+]
 
-# 添加图标文件
-if os.path.exists('wifi_icon.icns'):
-    datas.append(('wifi_icon.icns', '.'))
-elif os.path.exists('wifi_icon.ico'):
-    datas.append(('wifi_icon.ico', '.'))
-
-# 添加配置文件
-if os.path.exists('config.json'):
-    datas.append(('config.json', '.'))
-
-# 添加配置目录
-if os.path.exists('config'):
-    datas.append(('config', 'config'))
-
-# 分析主程序
 a = Analysis(
     ['wifi_professional.py'],
     pathex=[],
@@ -151,65 +136,67 @@ a = Analysis(
     hooksconfig={},
     runtime_hooks=[],
     excludes=[
-        'pytest',
-        'pytest_cov',
+        'IPython',
+        'jupyter',
+        'notebook',
         'sphinx',
-        'setuptools',
-        'pip',
+        'pytest',
+        'test',
+        'tests',
     ],
-    win_no_prefer_redirects=False,
-    win_private_assemblies=False,
     cipher=block_cipher,
     noarchive=False,
 )
 
-# PYZ 打包
-pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
+pyz = PYZ(
+    a.pure,
+    a.zipped_data,
+    cipher=block_cipher,
+)
 
-# EXE 打包（对于 macOS，这实际上是一个可执行文件）
 exe = EXE(
     pyz,
     a.scripts,
     [],
     exclude_binaries=True,
-    name='WiFi专业工具',
+    name='WiFiProfessional',          # ASCII 名称，供 .app 内部二进制使用
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
-    upx=True,
-    console=False,  # 不显示控制台窗口
+    upx=False,                        # macOS CI 环境通常不含 UPX
+    console=False,                    # 无终端窗口（GUI 模式）
     disable_windowed_traceback=False,
-    argv_emulation=False,
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
+    icon=None,                        # 无 .icns 文件时使用系统默认图标
 )
 
-# 收集依赖
 coll = COLLECT(
     exe,
     a.binaries,
     a.zipfiles,
     a.datas,
     strip=False,
-    upx=True,
+    upx=False,
     upx_exclude=[],
-    name='WiFi专业工具',
+    name='WiFiProfessional',
 )
 
-# 创建 macOS .app 包
+# 将 COLLECT 打包为标准 macOS .app Bundle
 app = BUNDLE(
     coll,
     name='WiFi专业工具.app',
-    icon='wifi_icon.icns' if os.path.exists('wifi_icon.icns') else None,
-    bundle_identifier='com.wifiprofessional.app',
+    icon=None,
+    bundle_identifier='com.nanling.wifi-professional',
     info_plist={
+        'CFBundleShortVersionString': '1.6.3',
+        'CFBundleVersion': '1.6.3',
+        'CFBundleDisplayName': 'WiFi专业工具',
         'CFBundleName': 'WiFi专业工具',
-        'CFBundleDisplayName': 'WiFi Professional',
-        'CFBundleVersion': '1.7.2',
-        'CFBundleShortVersionString': '1.7.2',
         'NSHighResolutionCapable': True,
-        'LSMinimumSystemVersion': '10.13.0',  # macOS High Sierra or later
-        'NSLocationWhenInUseUsageDescription': '需要访问WiFi功能以扫描网络',
+        'NSRequiresAquaSystemAppearance': False,   # 支持深色模式
+        'LSUIElement': False,
+        'NSHumanReadableCopyright': 'Copyright © 2024 NL@China_SZ',
     },
 )

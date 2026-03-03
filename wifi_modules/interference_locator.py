@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 
 """
-智能干扰源定位器
+信号干扰定位器
 实现RSSI三角定位、干扰源类型识别、缓解策略生成
 """
 
@@ -171,48 +171,60 @@ class InterferenceLocator:
     
     def triangulate(self, points: List[MeasurementPoint]) -> Optional[Tuple[float, float, float]]:
         """
-        三角定位算法
+        ✅ P1优化: N点加权最小二乘三角定位（不再丢弃3点之外的测量数据）
         返回: (x, y, confidence) 或 None
         """
         if len(points) < 3:
             return None
         
-        # 使用最强的3个信号点
-        points = sorted(points, key=lambda p: p.rssi, reverse=True)[:3]
+        # 按信号强度排序，最多使用8个可信点（信号越强定位越准）
+        points_used = sorted(points, key=lambda p: p.rssi, reverse=True)[:8]
+        distances = [self.rssi_to_distance(p.rssi) for p in points_used]
         
-        # 转换RSSI为距离
-        distances = [self.rssi_to_distance(p.rssi) for p in points]
-        
-        # 三边定位 (Trilateration)
         try:
-            x1, y1 = points[0].x, points[0].y
-            x2, y2 = points[1].x, points[1].y
-            x3, y3 = points[2].x, points[2].y
-            r1, r2, r3 = distances[0], distances[1], distances[2]
+            if len(points_used) == 3:
+                # 精确三边定位（3点时有解析解）
+                x1, y1 = points_used[0].x, points_used[0].y
+                x2, y2 = points_used[1].x, points_used[1].y
+                x3, y3 = points_used[2].x, points_used[2].y
+                r1, r2, r3 = distances[0], distances[1], distances[2]
+                
+                A = 2 * (x2 - x1)
+                B = 2 * (y2 - y1)
+                C = r1**2 - r2**2 - x1**2 + x2**2 - y1**2 + y2**2
+                D = 2 * (x3 - x2)
+                E = 2 * (y3 - y2)
+                F = r2**2 - r3**2 - x2**2 + x3**2 - y2**2 + y3**2
+                
+                denom = A * E - B * D
+                if abs(denom) < 1e-10:
+                    return None
+                
+                x = (C * E - F * B) / denom
+                y = (C * D - A * F) / (-denom)
+                
+            else:
+                # ✅ P1优化: N>3点使用加权最小二乘法，以信号最强点为参考消元
+                ref = points_used[0]
+                r0 = distances[0]
+                A_rows, b_vec = [], []
+                for i in range(1, len(points_used)):
+                    p = points_used[i]
+                    ri = distances[i]
+                    # 按信号强度加权（越强越可信，映射到 [1.0, 2.0]）
+                    w = 1.0 + max(0.0, (p.rssi + 80) / 40.0)
+                    A_rows.append([w * 2 * (p.x - ref.x), w * 2 * (p.y - ref.y)])
+                    b_vec.append(w * (r0**2 - ri**2 - ref.x**2 + p.x**2 - ref.y**2 + p.y**2))
+                
+                result, _, _, _ = np.linalg.lstsq(
+                    np.array(A_rows), np.array(b_vec), rcond=None
+                )
+                x, y = float(result[0]), float(result[1])
             
-            # 计算中间变量
-            A = 2 * (x2 - x1)
-            B = 2 * (y2 - y1)
-            C = r1**2 - r2**2 - x1**2 + x2**2 - y1**2 + y2**2
-            
-            D = 2 * (x3 - x2)
-            E = 2 * (y3 - y2)
-            F = r2**2 - r3**2 - x2**2 + x3**2 - y2**2 + y3**2
-            
-            # 求解坐标
-            if abs(A * E - B * D) < 1e-10:
-                # 三点共线，无法定位
-                return None
-            
-            x = (C * E - F * B) / (A * E - B * D)
-            y = (C * D - A * F) / (B * D - A * E)
-            
-            # 计算置信度 (基于几何精度因子 GDOP)
-            confidence = self._calculate_confidence(points, (x, y))
-            
+            confidence = self._calculate_confidence(points_used, (x, y))
             return (x, y, confidence)
             
-        except (ZeroDivisionError, ValueError):
+        except (ZeroDivisionError, ValueError, np.linalg.LinAlgError):
             return None
     
     def _calculate_confidence(self, points: List[MeasurementPoint], 
@@ -464,7 +476,8 @@ class InterferenceLocator:
             strategies.append("优化: 将WiFi路由器移至远离电话基站的位置")
         
         elif source.interference_type == InterferenceType.NEIGHBORING_WIFI:
-            strategies.append(f"优化: 避开信道{source.affected_channels}，选择干净信道")
+            ch_str = ', '.join(map(str, source.affected_channels))  # ✅ P1修复: 避免输出 Python list 格式 [1,6,11]
+            strategies.append(f"优化: 避开信道 {ch_str}，选择干净信道")
             strategies.append("建议: 调整AP发射功率，减少覆盖重叠")
             strategies.append("考虑: 启用DFS信道扩展可用频谱")
         

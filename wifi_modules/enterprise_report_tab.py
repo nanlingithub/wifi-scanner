@@ -16,7 +16,10 @@ import time
 from wifi_modules.theme import ModernTheme, ModernButton, ModernCard
 from wifi_modules.enterprise_signal_analyzer import EnterpriseSignalAnalyzer
 from wifi_modules.pci_dss_security_assessor import PCIDSSSecurityAssessor
-from wifi_modules.enterprise_report_generator import EnterpriseReportGenerator
+from wifi_modules.enterprise_reports import PDFGeneratorAsync
+from wifi_modules.enterprise_reports.templates.signal_template import SignalAnalysisTemplate
+from wifi_modules.enterprise_reports.templates.security_template import SecurityAssessmentTemplate
+from wifi_modules.enterprise_reports.templates.pci_dss_template import PCIDSSTemplate
 
 # 新增：导入缓存、日志和配置系统
 from wifi_modules.cache_manager import NetworkAnalysisCache
@@ -35,7 +38,11 @@ class EnterpriseReportTab:
         # 初始化分析器
         self.signal_analyzer = EnterpriseSignalAnalyzer()
         self.security_assessor = PCIDSSSecurityAssessor()
-        self.report_generator = EnterpriseReportGenerator()
+        # 使用 v2.0 PDF生成器（统一接口 + 智能缓存）
+        self.report_generator = PDFGeneratorAsync(use_cache=True)
+        self.signal_template = SignalAnalysisTemplate(self.report_generator.styles)
+        self.security_template = SecurityAssessmentTemplate(self.report_generator.styles)
+        self.pci_template = PCIDSSTemplate(self.report_generator.styles)
         
         # 新增：初始化缓存系统
         self.cache = NetworkAnalysisCache()
@@ -1347,11 +1354,12 @@ class EnterpriseReportTab:
         threading.Thread(target=analysis_thread, daemon=True).start()
     
     def _update_signal_progress(self, value, message):
-        """更新信号分析进度"""
-        self.signal_progress['value'] = value
-        self.signal_progress_percent.config(text=f"{int(value)}%")
-        self.signal_progress_label.config(text=message)
-        self.frame.update()
+        """更新信号分析进度（线程安全）"""
+        def _do():
+            self.signal_progress['value'] = value
+            self.signal_progress_percent.config(text=f"{int(value)}%")
+            self.signal_progress_label.config(text=message)
+        self.frame.after(0, _do)
     
     def _run_security_assessment(self):
         """执行安全评估（集成缓存机制 + 详细进度展示）"""
@@ -1369,8 +1377,7 @@ class EnterpriseReportTab:
                 
                 # 阶段2: 扫描网络 (10% → 25%)
                 self._update_security_progress(10, "📡 扫描WiFi网络...")
-                self.frame.update()
-                
+
                 wifi_data = self._get_wifi_data()
                 
                 if not wifi_data:
@@ -1490,11 +1497,12 @@ class EnterpriseReportTab:
         threading.Thread(target=assessment_thread, daemon=True).start()
     
     def _update_security_progress(self, value, message):
-        """更新安全评估进度"""
-        self.security_progress['value'] = value
-        self.security_progress_percent.config(text=f"{int(value)}%")
-        self.security_progress_label.config(text=message)
-        self.frame.update()
+        """更新安全评估进度（线程安全）"""
+        def _do():
+            self.security_progress['value'] = value
+            self.security_progress_percent.config(text=f"{int(value)}%")
+            self.security_progress_label.config(text=message)
+        self.frame.after(0, _do)
     
     def _run_complete_analysis(self):
         """执行完整分析（带详细进度展示）"""
@@ -1570,11 +1578,12 @@ class EnterpriseReportTab:
         threading.Thread(target=complete_thread, daemon=True).start()
     
     def _update_complete_progress(self, value, message):
-        """更新综合分析进度"""
-        self.complete_progress['value'] = value
-        self.complete_progress_percent.config(text=f"{int(value)}%")
-        self.complete_progress_label.config(text=message)
-        self.frame.update()
+        """更新综合分析进度（线程安全）"""
+        def _do():
+            self.complete_progress['value'] = value
+            self.complete_progress_percent.config(text=f"{int(value)}%")
+            self.complete_progress_label.config(text=message)
+        self.frame.after(0, _do)
     
     def _preview_signal_analysis(self):
         """预览信号分析结果"""
@@ -1667,10 +1676,12 @@ class EnterpriseReportTab:
         
         if filepath:
             try:
-                success = self.report_generator.generate_enterprise_report(
+                success = self.report_generator.generate_report(
                     self.current_analysis,
                     filepath,
-                    company_name="企业名称"
+                    self.signal_template,
+                    company_name="企业名称",
+                    report_type="signal"
                 )
                 
                 if success:
@@ -2077,10 +2088,12 @@ class EnterpriseReportTab:
         
         if filepath:
             try:
-                success = self.report_generator.generate_pci_dss_report(
+                success = self.report_generator.generate_report(
                     self.current_assessment,
                     filepath,
-                    company_name="企业名称"
+                    self.pci_template,
+                    company_name="企业名称",
+                    report_type="pci_dss"
                 )
                 
                 if success:
@@ -2145,13 +2158,15 @@ class EnterpriseReportTab:
                     security_path = f"{base_path}_安全评估.pdf"
                     
                     self.logger.info("生成信号分析报告")
-                    self.report_generator.generate_enterprise_report(
-                        self.current_analysis, signal_path, company_name="企业名称"
+                    self.report_generator.generate_report(
+                        self.current_analysis, signal_path, self.signal_template,
+                        company_name="企业名称", report_type="signal"
                     )
                     
                     self.logger.info("生成PCI-DSS安全评估报告")
-                    self.report_generator.generate_pci_dss_report(
-                        self.current_assessment, security_path, company_name="企业名称"
+                    self.report_generator.generate_report(
+                        self.current_assessment, security_path, self.pci_template,
+                        company_name="企业名称", report_type="pci_dss"
                     )
                     
                     self.logger.info(f"综合报告生成成功: {signal_path}, {security_path}")
@@ -2162,8 +2177,9 @@ class EnterpriseReportTab:
                     
                 elif self.current_analysis:
                     self.logger.info("仅生成信号分析报告")
-                    success = self.report_generator.generate_enterprise_report(
-                        self.current_analysis, filepath, company_name="企业名称"
+                    success = self.report_generator.generate_report(
+                        self.current_analysis, filepath, self.signal_template,
+                        company_name="企业名称", report_type="signal"
                     )
                     if success:
                         self.logger.info(f"信号分析报告生成成功: {filepath}")
@@ -2171,8 +2187,9 @@ class EnterpriseReportTab:
                         
                 elif self.current_assessment:
                     self.logger.info("仅生成安全评估报告")
-                    success = self.report_generator.generate_pci_dss_report(
-                        self.current_assessment, filepath, company_name="企业名称"
+                    success = self.report_generator.generate_report(
+                        self.current_assessment, filepath, self.pci_template,
+                        company_name="企业名称", report_type="pci_dss"
                     )
                     if success:
                         self.logger.info(f"安全评估报告生成成功: {filepath}")

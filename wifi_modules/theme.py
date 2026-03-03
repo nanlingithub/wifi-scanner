@@ -491,21 +491,25 @@ def apply_modern_style(root, theme_name='light'):
     style.theme_use('clam')
     
     # 配置Notebook样式
-    style.configure('TNotebook', 
+    style.configure('TNotebook',
                    background=theme['bg'],
-                   borderwidth=0)
-    
+                   borderwidth=0,
+                   tabmargins=[2, 4, 0, 0])
+
     style.configure('TNotebook.Tab',
                    background=theme['card_bg'],
-                   foreground=theme['fg'],
-                   padding=[20, 12],
+                   foreground=theme['text_muted'],
+                   padding=[18, 10],
                    font=('Microsoft YaHei UI', 10),
-                   borderwidth=0)
-    
+                   borderwidth=0,
+                   focuscolor='none')
+
     style.map('TNotebook.Tab',
-             background=[('selected', theme['primary']),
-                        ('active', theme['hover'])],
-             foreground=[('selected', 'white')])
+             background=[('selected', theme['bg']),
+                        ('active',   theme['hover'])],
+             foreground=[('selected', theme['primary']),
+                        ('active',   theme['fg'])],
+             font=[('selected', ('Microsoft YaHei UI', 10, 'bold'))])
     
     # 配置Frame样式
     style.configure('TFrame', background=theme['bg'])
@@ -545,7 +549,53 @@ def apply_modern_style(root, theme_name='light'):
                    troughcolor=theme['border'],
                    borderwidth=0,
                    thickness=8)
-    
+    # 配置 Scrollbar 样式
+    style.configure('TScrollbar',
+                   background=theme['border'],
+                   troughcolor=theme['bg'],
+                   borderwidth=0,
+                   arrowcolor=theme['text_muted'],
+                   relief='flat')
+    style.map('TScrollbar',
+              background=[('active', theme['primary']),
+                          ('pressed', theme['primary_dark'])])
+
+    # 配置 Entry 样式
+    style.configure('TEntry',
+                   fieldbackground=theme['input_bg'],
+                   foreground=theme['fg'],
+                   bordercolor=theme['input_border'],
+                   lightcolor=theme['input_border'],
+                   darkcolor=theme['input_border'],
+                   insertcolor=theme['fg'],
+                   relief='solid',
+                   borderwidth=1)
+    style.map('TEntry',
+              bordercolor=[('focus', theme['primary']),
+                           ('hover', theme['primary'])])
+
+    # 配置 LabelFrame 样式
+    style.configure('TLabelframe',
+                   background=theme['card_bg'],
+                   bordercolor=theme['border'],
+                   relief='solid',
+                   borderwidth=1)
+    style.configure('TLabelframe.Label',
+                   background=theme['card_bg'],
+                   foreground=theme['primary'],
+                   font=('Microsoft YaHei UI', 9, 'bold'))
+
+    # 配置 Scale 样式
+    style.configure('TScale',
+                   background=theme['bg'],
+                   troughcolor=theme['border'],
+                   sliderlength=16)
+    style.map('TScale',
+              background=[('active', theme['primary'])])
+
+    # 配置 Separator 样式
+    style.configure('TSeparator',
+                   background=theme['border'])    
     # 配置Treeview样式
     style.configure('Treeview',
                    background=theme['card_bg'],

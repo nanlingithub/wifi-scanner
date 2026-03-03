@@ -7,10 +7,19 @@ WiFi专业分析工具 - 模块化版本
 开发者：NL@China_SZ
 """
 
+import sys
+import io
+
+# 修复 pythonw.exe 无控制台模式下 sys.stdout/stderr 为 None 的问题
+# 必须在所有其他 import 之前执行，否则某些模块（如 speedtest）在加载时会崩溃
+if sys.stdout is None:
+    sys.stdout = io.StringIO()
+if sys.stderr is None:
+    sys.stderr = io.StringIO()
+
 import tkinter as tk
 import weakref  # P1修复: 防止循环引用
 from tkinter import ttk, messagebox
-import sys
 import os
 import logging
 
@@ -49,6 +58,7 @@ from wifi_modules.interference_locator_tab import InterferenceLocatorTab
 # ✅ P2-3: 导入内存监控模块
 from core.memory_monitor import get_memory_monitor
 import json
+from pathlib import Path
 
 
 class WiFiProfessionalApp:
@@ -58,7 +68,16 @@ class WiFiProfessionalApp:
         self.root = root
         self.root.title(f"{APP_TITLE} v{VERSION}")
         self.root.geometry("1400x900")
-        
+        self.root.minsize(1100, 700)
+
+        # 窗口居中显示
+        self.root.update_idletasks()
+        sw = self.root.winfo_screenwidth()
+        sh = self.root.winfo_screenheight()
+        x = (sw - 1400) // 2
+        y = (sh - 900) // 2
+        self.root.geometry(f"1400x900+{x}+{y}")
+
         # ✅ P1-1: 注册窗口关闭回调
         self.root.protocol("WM_DELETE_WINDOW", self._on_closing)
         
@@ -122,115 +141,213 @@ class WiFiProfessionalApp:
         tools_menu.add_cascade(label='🎨 主题选择', menu=theme_menu)
         
         # 添加所有主题选项
-        theme_menu.add_command(label='✓ 浅色经典' if self.current_theme == 'light' else '   浅色经典', 
-                              command=lambda: self._switch_theme('light'))
-        theme_menu.add_command(label='✓ 深色经典' if self.current_theme == 'dark' else '   深色经典', 
-                              command=lambda: self._switch_theme('dark'))
-        theme_menu.add_separator()
-        theme_menu.add_command(label='✓ 🏢 商务蓝' if self.current_theme == 'enterprise_blue' else '   🏢 商务蓝', 
-                              command=lambda: self._switch_theme('enterprise_blue'))
-        theme_menu.add_command(label='✓ 🏢 专业灰' if self.current_theme == 'enterprise_gray' else '   🏢 专业灰', 
-                              command=lambda: self._switch_theme('enterprise_gray'))
-        theme_menu.add_command(label='✓ 🏢 科技黑' if self.current_theme == 'enterprise_tech' else '   🏢 科技黑', 
-                              command=lambda: self._switch_theme('enterprise_tech'))
-        theme_menu.add_command(label='✓ 🏢 金融版' if self.current_theme == 'enterprise_finance' else '   🏢 金融版', 
-                              command=lambda: self._switch_theme('enterprise_finance'))
-        theme_menu.add_command(label='✓ 🏢 医疗版' if self.current_theme == 'enterprise_medical' else '   🏢 医疗版', 
-                              command=lambda: self._switch_theme('enterprise_medical'))
+        for tid, tlabel in [
+            ('light',              '浅色经典'),
+            ('dark',               '深色经典'),
+            (None, None),
+            ('enterprise_blue',    '🏢 商务蓝'),
+            ('enterprise_gray',    '🏢 专业灰'),
+            ('enterprise_tech',    '🏢 科技黑'),
+            ('enterprise_finance', '🏢 金融版'),
+            ('enterprise_medical', '🏢 医疗版'),
+        ]:
+            if tid is None:
+                theme_menu.add_separator()
+            else:
+                mark = '✓ ' if self.current_theme == tid else '   '
+                theme_menu.add_command(label=f'{mark}{tlabel}',
+                                       command=lambda t=tid: self._switch_theme(t))
         
         # 帮助菜单
         help_menu = tk.Menu(menubar, tearoff=0)
         menubar.add_cascade(label='帮助', menu=help_menu)
         help_menu.add_command(label='关于', command=self._show_about)
-        
-        # 主容器
+
+        # ─── 顶部 Header 栏 ───────────────────────────────────────────
+        self._header_bar = tk.Frame(self.root, height=68)
+        self._header_bar.pack(fill='x', side='top')
+        self._header_bar.pack_propagate(False)
+
+        # 左侧：图标 + 应用名
+        self._left_hdr = tk.Frame(self._header_bar)
+        self._left_hdr.pack(side='left', padx=(16, 0), pady=6)
+        self._app_icon_label = tk.Label(self._left_hdr, text='📶',
+                                        font=('Microsoft YaHei UI', 18))
+        self._app_icon_label.pack(side='left', padx=(0, 8))
+        self._title_frame = tk.Frame(self._left_hdr)
+        self._title_frame.pack(side='left')
+        self._header_title = tk.Label(self._title_frame, text=APP_TITLE,
+                                      font=('Microsoft YaHei UI', 14, 'bold'))
+        self._header_title.pack(anchor='w')
+        self._header_sub = tk.Label(self._title_frame,
+                                    text=f'v{VERSION}  —  专业级 WiFi 网络分析工具',
+                                    font=('Microsoft YaHei UI', 8))
+        self._header_sub.pack(anchor='w')
+
+        # 右侧：管理员徽章 + 性能测试按钮
+        self._right_hdr = tk.Frame(self._header_bar)
+        self._right_hdr.pack(side='right', padx=(0, 16), pady=14)
+        self._header_perf_btn = ModernButton(
+            self._right_hdr,
+            text=f'{PROFESSIONAL_ICONS["performance"]} 性能测试',
+            command=self._open_performance_test,
+            style='primary',
+            font=('Microsoft YaHei UI', 9, 'bold'),
+            padx=14, pady=6
+        )
+        self._header_perf_btn.pack(side='right', padx=(8, 0))
+        admin_fg = '#27ae60' if is_admin() else '#e67e22'
+        self._header_admin = tk.Label(self._right_hdr, text=get_admin_status_text(),
+                                      font=('Microsoft YaHei UI', 9), fg=admin_fg)
+        self._header_admin.pack(side='right')
+
+        # Header 底部分隔线
+        self._header_sep = tk.Frame(self.root, height=1)
+        self._header_sep.pack(fill='x', side='top')
+
+        # ─── 主内容区 ─────────────────────────────────────────────────
         main_container = ttk.Frame(self.root)
-        main_container.pack(fill='both', expand=True, padx=5, pady=5)
-        
-        # 创建Notebook（标签页容器）
+        main_container.pack(fill='both', expand=True, padx=6, pady=(6, 0))
+
         self.notebook = ttk.Notebook(main_container)
         self.notebook.pack(fill='both', expand=True)
-        
-        # 创建7个标签页
+
         self.tabs = {}
-        
-        # Tab 1: 网络概览
-        self.tabs['overview'] = NetworkOverviewTab(self.notebook, self.wifi_analyzer)
-        self.notebook.add(self.tabs['overview'].get_frame(), 
-                         text=f"{PROFESSIONAL_ICONS['network_overview']} 网络概览")
-        
-        # Tab 2: 信道分析
-        self.tabs['channel'] = ChannelAnalysisTab(self.notebook, self.wifi_analyzer)
-        self.notebook.add(self.tabs['channel'].get_frame(), 
-                         text=f"{PROFESSIONAL_ICONS['channel_analysis']} 信道分析")
-        
-        # Tab 3: 实时监控
-        self.tabs['monitor'] = RealtimeMonitorTab(self.notebook, self.wifi_analyzer)
-        self.notebook.add(self.tabs['monitor'].get_frame(), 
-                         text=f"{PROFESSIONAL_ICONS['realtime_monitor']} 实时监控")
-        
-        # Tab 4: WiFi热力图
-        self.tabs['heatmap'] = HeatmapTab(self.notebook, self.wifi_analyzer)
-        self.notebook.add(self.tabs['heatmap'].get_frame(), 
-                         text=f"{PROFESSIONAL_ICONS['heatmap']} 信号热力图")
-        
-        # Tab 5: 部署优化
-        self.tabs['deployment'] = DeploymentTab(self.notebook, self.wifi_analyzer)
-        self.notebook.add(self.tabs['deployment'].get_frame(), 
-                         text=f"{PROFESSIONAL_ICONS['deployment']} 部署优化")
-        
-        # Tab 6: 安全检测
-        self.tabs['security'] = SecurityTab(self.notebook, self.wifi_analyzer)
-        self.notebook.add(self.tabs['security'].get_frame(), 
-                         text=f"{PROFESSIONAL_ICONS['security']} 安全检测")
-        
-        # Tab 7: 企业级报告 (新增 v1.6)
-        self.tabs['enterprise'] = EnterpriseReportTab(self.notebook, self.wifi_analyzer)
-        self.notebook.add(self.tabs['enterprise'].get_frame(), 
-                         text="📊 企业级报告")
-        
-        # Tab 8: 智能干扰定位 (新增 v1.6.3)
+        tab_defs = [
+            ('overview',   NetworkOverviewTab,  (self.notebook, self.wifi_analyzer), PROFESSIONAL_ICONS['network_overview'], '网络概览'),
+            ('channel',    ChannelAnalysisTab,  (self.notebook, self.wifi_analyzer), PROFESSIONAL_ICONS['channel_analysis'], '信道分析'),
+            ('monitor',    RealtimeMonitorTab,  (self.notebook, self.wifi_analyzer), PROFESSIONAL_ICONS['realtime_monitor'], '实时监控'),
+            ('heatmap',    HeatmapTab,          (self.notebook, self.wifi_analyzer), PROFESSIONAL_ICONS['heatmap'],          '信号热力图'),
+            ('deployment', DeploymentTab,       (self.notebook, self.wifi_analyzer), PROFESSIONAL_ICONS['deployment'],       '部署优化'),
+            ('security',   SecurityTab,         (self.notebook, self.wifi_analyzer), PROFESSIONAL_ICONS['security'],         '安全检测'),
+            ('enterprise', EnterpriseReportTab, (self.notebook, self.wifi_analyzer), '📊',                                 '企业报告'),
+        ]
+        for key, cls, args, icon, label in tab_defs:
+            self.tabs[key] = cls(*args)
+            self.notebook.add(self.tabs[key].get_frame(), text=f'  {icon} {label}  ')
+
+        # Tab 8: 信号干扰定位（内部自行注册到 notebook）
         self.tabs['interference'] = InterferenceLocatorTab(self.notebook)
-        # 标签页已在InterferenceLocatorTab内部添加
-        
-        # 底部状态栏
-        statusbar = ttk.Frame(self.root)
+
+        # ─── 底部状态栏 ───────────────────────────────────────────────
+        self._sb_top_sep = tk.Frame(self.root, height=1)
+        self._sb_top_sep.pack(fill='x', side='bottom')
+
+        statusbar = tk.Frame(self.root, height=28)
         statusbar.pack(fill='x', side='bottom')
-        
-        ttk.Label(statusbar, text=f'版本: {VERSION}', 
-                 font=('Microsoft YaHei UI', 8)).pack(side='left', padx=5)
-        
-        ttk.Label(statusbar, text=f'开发者: {DEVELOPER}', 
-                 font=('Microsoft YaHei UI', 8)).pack(side='left', padx=5)
-        
-        # 权限状态显示
-        admin_status = get_admin_status_text()
-        self.admin_label = ttk.Label(
-            statusbar, 
-            text=admin_status,
+        statusbar.pack_propagate(False)
+
+        # 左侧：版本、开发者、权限状态
+        self._sb_ver = tk.Label(statusbar, text=f'💻 v{VERSION}',
+                                font=('Microsoft YaHei UI', 8))
+        self._sb_ver.pack(side='left', padx=(12, 0))
+        tk.Label(statusbar, text='│', font=('Microsoft YaHei UI', 8)).pack(side='left', padx=6)
+        tk.Label(statusbar, text=f'开发: {DEVELOPER}',
+                 font=('Microsoft YaHei UI', 8)).pack(side='left')
+        tk.Label(statusbar, text='│', font=('Microsoft YaHei UI', 8)).pack(side='left', padx=6)
+        self.admin_label = tk.Label(
+            statusbar, text=get_admin_status_text(),
             font=('Microsoft YaHei UI', 8),
-            foreground='green' if is_admin() else 'orange'
+            fg='#27ae60' if is_admin() else '#e67e22'
         )
-        self.admin_label.pack(side='left', padx=5)
-        
-        # 性能测试快捷按钮
-        ModernButton(statusbar, text=f'{PROFESSIONAL_ICONS["performance"]} WiFi性能测试', 
-                    command=self._open_performance_test, 
-                    style='primary').pack(side='right', padx=5)
-        
-        self.status_label = ttk.Label(statusbar, text='就绪', 
-                                      font=('Microsoft YaHei UI', 8))
-        self.status_label.pack(side='right', padx=5)
+        self.admin_label.pack(side='left')
+
+        # 右侧：实时时钟、就绪状态
+        self._sb_clock = tk.Label(statusbar, text='', font=('Microsoft YaHei UI', 8))
+        self._sb_clock.pack(side='right', padx=(0, 12))
+        tk.Label(statusbar, text='│', font=('Microsoft YaHei UI', 8)).pack(side='right', padx=6)
+        self.status_label = tk.Label(statusbar, text='就绪 ✅',
+                                     font=('Microsoft YaHei UI', 8))
+        self.status_label.pack(side='right', padx=(0, 6))
+
+        self._update_clock()
+
+    def _update_clock(self):
+        """实时更新状态栏时钟"""
+        import datetime
+        now = datetime.datetime.now().strftime('%Y-%m-%d  %H:%M:%S')
+        if hasattr(self, '_sb_clock'):
+            self._sb_clock.config(text=f'⏰  {now}')
+            self.root.after(1000, self._update_clock)
     
     def _apply_theme(self):
         """应用主题"""
         theme = ModernTheme.get_theme(self.current_theme)
-        
-        # 应用现代化样式
+
+        # 应用 ttk 样式
         apply_modern_style(self.root, self.current_theme)
-        
-        # 应用到根窗口
+
+        # 根窗口背景色
         self.root.configure(bg=theme['bg'])
+
+        # Header 栏配色
+        if hasattr(self, '_header_bar'):
+            hdr_bg = theme['primary']
+            hdr_fg = 'white'
+            sub_fg = '#cce0ff' if 'blue' in self.current_theme else (
+                     '#aad4d4' if 'medical' in self.current_theme else (
+                     '#d0d0d0' if 'gray' in self.current_theme else (
+                     '#f5deb3' if 'finance' in self.current_theme else (
+                     '#7efff5' if 'tech' in self.current_theme else '#e0e0e0'))))
+
+            def _set_bg_recursive(widget, bg):
+                """递归设置所有子组件背景色"""
+                try:
+                    widget.configure(bg=bg)
+                except Exception:
+                    pass
+                for child in widget.winfo_children():
+                    _set_bg_recursive(child, bg)
+
+            _set_bg_recursive(self._header_bar, hdr_bg)
+
+            # 针对性设置前景色
+            for lbl in (self._app_icon_label, self._header_title, self._header_admin):
+                try:
+                    lbl.configure(fg=hdr_fg)
+                except Exception:
+                    pass
+            try:
+                self._header_sub.configure(fg=sub_fg)
+            except Exception:
+                pass
+            try:
+                self._header_sep.configure(bg=theme['primary_dark'])
+            except Exception:
+                pass
+
+        # 状态栏配色
+        sb_bg = theme['card_bg']
+        sb_fg = theme['text_muted']
+        for attr in ('_sb_ver', '_sb_clock', 'status_label', 'admin_label'):
+            w = getattr(self, attr, None)
+            if w:
+                try:
+                    w.configure(bg=sb_bg, fg=sb_fg)
+                except Exception:
+                    pass
+        if hasattr(self, '_sb_top_sep'):
+            try:
+                self._sb_top_sep.configure(bg=theme['border'])
+            except Exception:
+                pass
+        # 状态栏父框背景
+        if hasattr(self, 'status_label'):
+            try:
+                self.status_label.master.configure(bg=sb_bg)
+            except Exception:
+                pass
+        # 分隔符和其他标签
+        if hasattr(self, 'admin_label'):
+            try:
+                sb = self.admin_label.master
+                for w in sb.winfo_children():
+                    try:
+                        w.configure(bg=sb_bg)
+                    except Exception:
+                        pass
+            except Exception:
+                pass
     
     def _open_performance_test(self):
         """打开WiFi性能测试窗口"""
@@ -264,7 +381,7 @@ class WiFiProfessionalApp:
     def _load_theme_config(self):
         """从配置文件加载主题设置"""
         try:
-            config_path = 'config.json'
+            config_path = Path(__file__).parent / 'config.json'
             if os.path.exists(config_path):
                 with open(config_path, 'r', encoding='utf-8') as f:
                     config = json.load(f)
@@ -282,7 +399,7 @@ class WiFiProfessionalApp:
     def _save_theme_config(self, theme_name):
         """保存主题设置到配置文件"""
         try:
-            config_path = 'config.json'
+            config_path = Path(__file__).parent / 'config.json'
             config = {}
             
             # 读取现有配置
@@ -316,7 +433,7 @@ class WiFiProfessionalApp:
 • 部署优化 - AP位置规划与覆盖分析
 • 安全检测 - WEP/WPA/加密方式检测
 • 企业级报告 - PDF/Excel专业分析报告
-• 智能干扰定位 - RSSI三角定位/干扰源识别 (v1.6.3新增)
+• 信号干扰定位 - RSSI三角定位/干扰源识别 (v1.6.3新增)
 
 Copyright © 2026 {DEVELOPER}
 保留所有权利
@@ -329,45 +446,33 @@ Copyright © 2026 {DEVELOPER}
         """✅ P1-1: 窗口关闭清理回调"""
         try:
             logging.info("应用程序正在关闭，执行清理操作...")
-            
-            # 1. 停止实时监控
-            if hasattr(self, 'tabs') and 'realtime' in self.tabs:
+
+            # 1. 停止实时监控（线程内部有 stop_event，会迅速退出）
+            if hasattr(self, 'tabs') and 'monitor' in self.tabs:
                 try:
-                    realtime_tab = self.tabs['realtime']
+                    realtime_tab = self.tabs['monitor']
                     if hasattr(realtime_tab, 'stop_monitoring'):
                         realtime_tab.stop_monitoring()
                         logging.info("✅ 实时监控已停止")
                 except Exception as e:
                     logging.error(f"停止实时监控失败: {e}")
-            
-            # 2. 等待后台线程结束（超时保护）
-            import threading
-            active_threads = [t for t in threading.enumerate() if t != threading.current_thread()]
-            if active_threads:
-                logging.info(f"等待 {len(active_threads)} 个后台线程结束...")
-                for thread in active_threads:
-                    if hasattr(thread, 'join'):
-                        try:
-                            thread.join(timeout=2)  # ✅ 2秒超时保护
-                            if thread.is_alive():
-                                logging.warning(f"线程 {thread.name} 超时未结束")
-                            else:
-                                logging.info(f"✅ 线程 {thread.name} 已正常结束")
-                        except Exception as e:
-                            logging.error(f"等待线程失败: {e}")
-            
+
+            # 2. 停止内存监控（Event 唤醒，最多等 1 秒）
+            if hasattr(self, 'memory_monitor'):
+                try:
+                    self.memory_monitor.stop()
+                    logging.info("✅ 内存监控已停止")
+                except Exception as e:
+                    logging.error(f"停止内存监控失败: {e}")
+
             # 3. 关闭日志系统
             logging.info("关闭日志系统")
             logging.shutdown()
-            
-            # 4. ✅ P2-3: 停止内存监控
-            if hasattr(self, 'memory_monitor'):
-                self.memory_monitor.stop()
-            
+
         except Exception as e:
             print(f"清理过程出错: {e}")
         finally:
-            # 5. 销毁窗口
+            # 4. 销毁窗口（其余 daemon 线程随进程自动消亡）
             self.root.destroy()
 
 

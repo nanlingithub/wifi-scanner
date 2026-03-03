@@ -22,7 +22,23 @@ class SignalTrendAnalyzer:
         self._load_history()
     
     def add_data_point(self, ssid: str, signal_dbm: float):
-        """添加数据点"""
+        """添加数据点
+
+        Args:
+            ssid: WiFi 网络名称
+            signal_dbm: 信号强度（dBm），合法范围 -100 ~ -10
+        """
+        # 输入校验：过滤无效信号值
+        if not ssid or not isinstance(ssid, str):
+            return
+        try:
+            signal_dbm = float(signal_dbm)
+        except (TypeError, ValueError):
+            return
+        # WiFi 信号物理范围：-100 dBm（极弱）~ -10 dBm（极强/贴近AP）
+        if not (-100 <= signal_dbm <= -10):
+            return  # 丢弃越界数据点，避免污染图表坐标轴
+
         data_point = {
             'timestamp': datetime.now().isoformat(),
             'ssid': ssid,

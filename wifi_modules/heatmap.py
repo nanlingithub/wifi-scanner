@@ -10,6 +10,7 @@ from tkinter import ttk, filedialog, messagebox
 import os
 import csv
 import json
+import threading
 from datetime import datetime
 import numpy as np
 from matplotlib.figure import Figure
@@ -61,21 +62,9 @@ class HeatmapTab:
         (0,  20,  '极弱', '#e74c3c')
     ]
     
-    # ✅ P2: 障碍物材料衰减值(dB)
-    WALL_ATTENUATION = {
-        '木门': 3,
-        '石膏板墙': 5,
-        '砖墙': 10,
-        '混凝土墙': 15,
-        '金属': 20
-    }
-    
-    # ✅ P3: 合规性标准
-    COMPLIANCE_STANDARDS = {
-        '办公室': {'min_signal': 70, 'coverage_rate': 95, 'overlap_max': 3},
-        '学校': {'min_signal': 75, 'coverage_rate': 98, 'overlap_max': 2},
-        '医院': {'min_signal': 80, 'coverage_rate': 99, 'overlap_max': 1}
-    }
+    # P2: 障碍物材料衰减值(dB) — 引用 core/constants.py 规范定义
+    from core.constants import WALL_ATTENUATION_BASIC as WALL_ATTENUATION  # type: ignore[misc]
+    from core.constants import COMPLIANCE_STANDARDS  # type: ignore[misc]
     
     def __init__(self, parent, wifi_analyzer):
         self.parent = parent
@@ -351,37 +340,90 @@ class HeatmapTab:
         ModernButton(button_frame, text="取消", command=dialog.destroy, style='secondary').pack(side='left', padx=5)
     
     def _collect_grid_data(self, x_points, y_points):
-        """采集网格数据（✅ P1: 多频段支持）"""
-        for x in x_points:
-            for y in y_points:
-                networks = self.wifi_analyzer.scan_wifi_networks(force_refresh=True)
-                
-                # ✅ P1: 多频段数据结构
-                signals = {'2.4GHz': 0, '5GHz': 0, '6GHz': 0}
-                
-                if networks:
-                    for net in networks:
-                        band = net.get('band', '2.4GHz')
-                        signal = net.get('signal_percent', 0)
-                        if signal > signals.get(band, 0):
-                            signals[band] = signal
-                
-                data_point = {
-                    'x': x,
-                    'y': y,
-                    'signals': signals,
-                    'best_signal': max(signals.values()),  # 最佳信号
-                    'timestamp': datetime.now()
-                }
-                
-                self.measurement_data.append(data_point)
-        
-        self._update_data_list()
-        
-        if self.auto_preview.get():
-            self._update_heatmap()
-        
-        messagebox.showinfo("完成", f"采集完成，共 {len(self.measurement_data)} 个数据点")
+        """采集网格数据（✅ P1: 多频段支持，✅ 后台线程防止 UI 冻结）"""
+        total_points = len(x_points) * len(y_points)
+
+        # --- 进度对话框 ---
+        progress_window = tk.Toplevel(self.frame)
+        progress_window.title("采集中...")
+        progress_window.geometry("400x150")
+        progress_window.resizable(False, False)
+        progress_window.grab_set()
+
+        ttk.Label(progress_window, text="正在采集网格数据，请等待...").pack(pady=(15, 5))
+        progress_bar = ttk.Progressbar(progress_window, maximum=total_points, length=360)
+        progress_bar.pack(pady=5)
+        progress_label = ttk.Label(progress_window, text=f"0 / {total_points}")
+        progress_label.pack()
+
+        cancelled = [False]  # 可变容器供内嵌函数读写
+
+        def on_cancel():
+            cancelled[0] = True
+            try:
+                progress_window.destroy()
+            except Exception:
+                pass
+
+        ttk.Button(progress_window, text="取消", command=on_cancel).pack(pady=8)
+
+        def scan_loop():
+            count = 0
+            for x in x_points:
+                if cancelled[0]:
+                    break
+                for y in y_points:
+                    if cancelled[0]:
+                        break
+
+                    networks = self.wifi_analyzer.scan_wifi_networks(force_refresh=True)
+
+                    # ✅ P1: 多频段数据结构
+                    signals = {'2.4GHz': 0, '5GHz': 0, '6GHz': 0}
+                    if networks:
+                        for net in networks:
+                            band = net.get('band', '2.4GHz')
+                            signal = net.get('signal_percent', 0)
+                            if signal > signals.get(band, 0):
+                                signals[band] = signal
+
+                    data_point = {
+                        'x': x,
+                        'y': y,
+                        'signals': signals,
+                        'best_signal': max(signals.values()),  # 最佳信号
+                        'timestamp': datetime.now()
+                    }
+                    self.measurement_data.append(data_point)
+                    count += 1
+
+                    # 在 UI 线程更新进度条
+                    def _update_progress(c=count):
+                        try:
+                            progress_bar['value'] = c
+                            progress_label.config(text=f"{c} / {total_points}")
+                        except Exception:
+                            pass
+                    self.frame.after(0, _update_progress)
+
+            # 采集结束，在 UI 线程执行收尾工作
+            collected = count
+
+            def _finish():
+                try:
+                    progress_window.destroy()
+                except Exception:
+                    pass
+                self._update_data_list()
+                if self.auto_preview.get():
+                    self._update_heatmap()
+                if not cancelled[0]:
+                    messagebox.showinfo("完成", f"采集完成，共 {len(self.measurement_data)} 个数据点")
+
+            self.frame.after(0, _finish)
+
+        t = threading.Thread(target=scan_loop, daemon=True)
+        t.start()
     
     def _import_file(self):
         """导入文件"""
@@ -864,7 +906,7 @@ class HeatmapTab:
                 import json
                 data = {
                     'measurement_data': self.measurement_data,
-                    'aps': self.aps,
+                    'aps': self.ap_locations,
                     'obstacles': self.obstacles,
                     'timestamp': timestamp
                 }
@@ -957,7 +999,7 @@ class HeatmapTab:
     
     def _generate_basic_report(self):
         """生成基础报告"""
-        signals = [d['signal'] for d in self.measurement_data]
+        signals = [d.get('best_signal', d.get('signal', 0)) for d in self.measurement_data]
         
         report = f"""=== WiFi信号热力图报告 ===
 
@@ -1449,6 +1491,20 @@ class HeatmapTab:
         
         fig = Figure(figsize=(15, 5), dpi=100)
         
+        # 计算跨两个快照的共享坐标空间，确保差异图坐标系一致
+        all_data = snap1['data'] + snap2['data']
+        if len(all_data) >= 3:
+            all_x = np.array([d['x'] for d in all_data])
+            all_y = np.array([d['y'] for d in all_data])
+            xi_lin = np.linspace(all_x.min(), all_x.max(), 100)
+            yi_lin = np.linspace(all_y.min(), all_y.max(), 100)
+            xi_shared, yi_shared = np.meshgrid(xi_lin, yi_lin)
+        else:
+            xi_shared = yi_shared = None
+        
+        zi1 = None  # 防止快照1数据不足时出现 NameError
+        zi = None   # 防止快照2数据不足时出现 NameError
+        
         # 提取数据
         for idx, snap in enumerate([snap1, snap2], 1):
             data = snap['data']
@@ -1459,9 +1515,13 @@ class HeatmapTab:
             y = np.array([d['y'] for d in data])
             signal = np.array([d.get('best_signal', d.get('signal', 0)) for d in data])
             
-            xi = np.linspace(x.min(), x.max(), 100)
-            yi = np.linspace(y.min(), y.max(), 100)
-            xi, yi = np.meshgrid(xi, yi)
+            # 优先使用共享坐标网格，保证差异图坐标系一致
+            if xi_shared is not None:
+                xi, yi = xi_shared, yi_shared
+            else:
+                xi = np.linspace(x.min(), x.max(), 100)
+                yi = np.linspace(y.min(), y.max(), 100)
+                xi, yi = np.meshgrid(xi, yi)
             
             rbf = Rbf(x, y, signal, function='multiquadric', smooth=0.5)
             zi = rbf(xi, yi)
@@ -1477,11 +1537,11 @@ class HeatmapTab:
             if idx == 1:
                 zi1 = zi
         
-        # 差异图
-        if len(snap1['data']) >= 3 and len(snap2['data']) >= 3:
+        # 差异图（仅当两个快照均有足够数据且共享坐标系可用时）
+        if zi1 is not None and zi is not None and xi_shared is not None:
             ax3 = fig.add_subplot(1, 3, 3)
             diff = zi - zi1
-            contour = ax3.contourf(xi, yi, diff, levels=15, cmap='RdBu_r', alpha=0.8)
+            contour = ax3.contourf(xi_shared, yi_shared, diff, levels=15, cmap='RdBu_r', alpha=0.8)
             fig.colorbar(contour, ax=ax3)
             ax3.set_title('信号变化 (快照2 - 快照1)')
             ax3.set_xlabel('X (米)')
@@ -1919,14 +1979,14 @@ class HeatmapTab:
             
             try:
                 # 应用AP配置
-                self.aps = template['aps'].copy()
+                self.ap_locations = template['aps'].copy()
                 
                 # 应用障碍物（简化版，实际需要坐标）
                 # 这里只是示例，实际应用需要更复杂的逻辑
                 
                 messagebox.showinfo("成功", 
                                   f"已应用【{template_name}】模板\n\n"
-                                  f"- AP数量: {len(self.aps)}\n"
+                                  f"- AP数量: {len(self.ap_locations)}\n"
                                   f"- 合规标准: {template['compliance']}\n\n"
                                   f"请进行实际测量以验证效果")
                 template_window.destroy()
@@ -1994,7 +2054,7 @@ class HeatmapTab:
             import json
             data = {
                 'measurement_data': self.measurement_data,
-                'aps': self.aps,
+                'aps': self.ap_locations,
                 'obstacles': self.obstacles,
                 'timestamp': timestamp
             }
@@ -2039,7 +2099,7 @@ class HeatmapTab:
                 # 添加测量数据
                 for data in self.measurement_data:
                     # 转换信号百分比为dBm (假设100% = -30dBm, 0% = -90dBm)
-                    signal_dbm = -90 + (data['signal'] / 100) * 60
+                    signal_dbm = -90 + (data.get('best_signal', 0) / 100) * 60
                     analyzer.add_measurement(data['x'], data['y'], signal_dbm)
                 
                 # 计算区域面积
@@ -2286,7 +2346,7 @@ class HeatmapTab:
   信号强度: 最大 {max(signals):.0f}%  最小 {min(signals):.0f}%  平均 {sum(signals)/len(signals):.0f}%
   
 AP配置:
-  数量: {len(self.aps)}
+  数量: {len(self.ap_locations)}
   
 障碍物:
   数量: {len(self.obstacles)}

@@ -12,13 +12,13 @@ from typing import Dict, List, Optional
 import threading
 import io
 
-# 修复PyInstaller打包后的stdout/stderr问题
-if getattr(sys, 'frozen', False):
-    # 如果是打包后的exe，重定向stdout和stderr
-    if sys.stdout is None:
-        sys.stdout = io.StringIO()
-    if sys.stderr is None:
-        sys.stderr = io.StringIO()
+# 修复 pythonw.exe / PyInstaller 打包后 stdout/stderr 为 None 的问题
+# pythonw.exe 无控制台模式下 sys.stdout/stderr 均为 None，
+# speedtest.py 模块级初始化会尝试调用 sys.stdout.fileno() 导致 AttributeError
+if sys.stdout is None:
+    sys.stdout = io.StringIO()
+if sys.stderr is None:
+    sys.stderr = io.StringIO()
 
 # 导入speedtest模块
 try:
@@ -116,9 +116,13 @@ class WiFiPerformanceBenchmark:
             )
             
             if ping_result.returncode == 0:
-                # 解析平均延迟
+                # 解析平均延迟（兼容中文/英文 Windows 输出）
                 import re
-                avg_match = re.search(r'平均 = (\d+)ms', ping_result.stdout)
+                avg_match = re.search(
+                    r'(?:平均|Average)\s*=\s*(\d+)\s*ms',
+                    ping_result.stdout,
+                    re.IGNORECASE
+                )
                 if avg_match:
                     result['avg_ping'] = int(avg_match.group(1))
                     result['ping_ok'] = True
@@ -163,12 +167,12 @@ class WiFiPerformanceBenchmark:
                 
                 if channel_match:
                     channel = int(channel_match.group(1))
-                    # 判断频段
+                    # 修复：明确分段判断，覆盖 6GHz 高段(166-233)
                     if channel <= 14:
                         band = '2.4GHz'
-                    elif channel >= 36 and channel <= 165:
+                    elif 36 <= channel <= 165:
                         band = '5GHz'
-                    elif channel >= 1 and channel <= 233 and channel % 4 in [1, 5, 9]:
+                    elif (15 <= channel <= 35) or (166 <= channel <= 233):
                         band = '6GHz'
                     else:
                         return 'N/A'
@@ -274,7 +278,10 @@ class WiFiPerformanceBenchmark:
             
             # 提取关键指标
             ping = round(results_dict.get('ping', 0), 2)
-            
+
+            # 一次性检测 WiFi 协议，后续 get_quality_rating 直接传入，避免重复调用 netsh
+            wifi_protocol = self._detect_current_wifi_protocol()
+
             # 构建测试结果
             test_result = {
                 'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -292,7 +299,7 @@ class WiFiPerformanceBenchmark:
                     'ip': results_dict.get('client', {}).get('ip', 'Unknown'),
                     'isp': results_dict.get('client', {}).get('isp', 'Unknown')
                 },
-                'wifi_protocol': self._detect_current_wifi_protocol()
+                'wifi_protocol': wifi_protocol  # 使用已检测的缓存值
             }
             
             # P1修复: 使用锁保护共享数据
@@ -426,20 +433,23 @@ class WiFiPerformanceBenchmark:
         except Exception as e:
             raise Exception(f"导出CSV失败: {str(e)}")
     
-    def get_quality_rating(self, download: float, upload: float, ping: float) -> Dict:
+    def get_quality_rating(self, download: float, upload: float, ping: float,
+                            wifi_protocol: str = None) -> Dict:
         """
         评估网络质量等级
-        
+
         Args:
             download: 下载速度 (Mbps)
             upload: 上传速度 (Mbps)
             ping: 延迟 (ms)
-        
+            wifi_protocol: WiFi 协议字符串（可选，传入则跳过 netsh 检测）
+
         Returns:
             评级信息字典
         """
-        # 检测WiFi协议，根据不同标准设置评分基准
-        wifi_protocol = self._detect_current_wifi_protocol()
+        # 复用传入的协议，若未传入才重新检测（避免重复 netsh 调用）
+        if wifi_protocol is None:
+            wifi_protocol = self._detect_current_wifi_protocol()
         
         # 2026年WiFi标准基准速度 (Mbps)
         if 'WiFi 7' in wifi_protocol or '802.11be' in wifi_protocol:

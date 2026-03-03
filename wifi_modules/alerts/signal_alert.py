@@ -2,11 +2,17 @@
 WiFi信号声音警报模块
 当信号强度低于设定阈值时播放警报音
 """
-import winsound
 import platform
 import threading
 import time
 from typing import Optional
+
+try:
+    import winsound
+    _WINSOUND_AVAILABLE = True
+except ImportError:          # Linux / macOS
+    _WINSOUND_AVAILABLE = False
+    winsound = None          # type: ignore[assignment]
 
 
 class SignalAlert:
@@ -114,7 +120,7 @@ class SignalAlert:
     def _play_sound(self, alert_type: str):
         """播放声音（后台线程）"""
         try:
-            if self.system == "windows":
+            if self.system == "windows" and _WINSOUND_AVAILABLE:
                 if alert_type == self.ALERT_CRITICAL:
                     # 严重警告 - 播放3次短促的警报音
                     for _ in range(3):

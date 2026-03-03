@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 
 """
-智能干扰源定位器 - GUI标签页
+信号干扰定位器 - GUI标签页
 提供交互式测量、定位和可视化功能
 """
 
@@ -13,6 +13,7 @@ from datetime import datetime
 from typing import Optional, List
 import matplotlib
 matplotlib.use('TkAgg')
+import matplotlib.patches as mpatches  # ✅ P0修复: 用于绘制圆形，pyplot不导出Circle
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 import numpy as np
@@ -32,7 +33,7 @@ class InterferenceLocatorTab:
         
         # 创建标签页
         self.frame = ttk.Frame(parent_notebook)
-        parent_notebook.add(self.frame, text="📡 智能干扰定位")
+        parent_notebook.add(self.frame, text="📡 信号干扰定位")
         
         # 干扰定位器
         self.locator = InterferenceLocator()
@@ -533,7 +534,8 @@ class InterferenceLocatorTab:
                     # 绘制置信圈
                     if source.location_confidence > 0.3:
                         radius = 2 * (1 - source.location_confidence)
-                        circle = plt.Circle(
+                        # ✅ P0修复: plt.Circle不存在于pyplot模块，改用matplotlib.patches.Circle
+                        circle = mpatches.Circle(
                             (sx, sy), radius,
                             color=color, fill=False,
                             linestyle='--', alpha=0.5
@@ -699,7 +701,7 @@ import matplotlib.pyplot as plt
 # 测试代码
 if __name__ == "__main__":
     root = tk.Tk()
-    root.title("智能干扰源定位器测试")
+    root.title("信号干扰定位器测试")
     root.geometry("1200x800")
     
     notebook = ttk.Notebook(root)
